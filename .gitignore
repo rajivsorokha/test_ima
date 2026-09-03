@@ -1,0 +1,10 @@
+node_modules/
+backend/db/*.db
+backend/db/*.db-journal
+backend/db/*.db-wal
+backend/db/*.db-shm
+src-tauri/target/
+src-tauri/gen/
+backend/backend.log
+.env
+*.log

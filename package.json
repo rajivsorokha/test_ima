@@ -1,0 +1,17 @@
+{
+  "name": "ima-langnubi-dairy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ima Langnubi Dairy — multi-farm milk network, POS, and finance manager (Node.js + SQLite + Tauri)",
+  "scripts": {
+    "backend:install": "cd backend && npm install",
+    "backend:seed": "cd backend && npm run seed",
+    "backend:start": "cd backend && npm start",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

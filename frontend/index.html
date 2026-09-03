@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ima Langnubi Dairy — Farm Manager</title>
+<link rel="icon" href="assets/logo-square.png" />
+<link rel="stylesheet" href="css/style.css" />
+<script>
+  (function() {
+    var t = localStorage.getItem('ild_theme') || 'green';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+</head>
+<body>
+
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <img src="assets/logo.png" alt="Ima Langnubi Dairy" class="login-logo" />
+      <h1>Ima Langnubi Dairy</h1>
+      <p class="subtitle">Thangmeiband Sinam Leikai, Imphal, Manipur</p>
+      <form id="loginForm">
+        <div class="form-row"><label>Username</label><input type="text" name="username" required autocomplete="username" /></div>
+        <div class="form-row"><label>Password</label><input type="password" name="password" required autocomplete="current-password" /></div>
+        <div id="loginError" class="login-error hidden"></div>
+        <button type="submit" class="primary" style="width:100%;">Sign In</button>
+      </form>
+      <p class="login-copyright">© <span id="copyrightYear"></span> Xeoscape. All rights reserved.<br />Licensed software — <a href="#" id="viewLicenseLink">view license agreement</a>.</p>
+    </div>
+  </div>
+
+  <div class="app hidden" id="appShell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="assets/logo.png" alt="Ima Langnubi Dairy" class="brand-logo" />
+      </div>
+      <nav id="nav">
+        <a href="#dashboard" data-route="dashboard">📊 Dashboard</a>
+        <a href="#cows" data-route="cows" data-roles="admin manager">🐄 Cow Management</a>
+        <a href="#milk" data-route="milk" data-roles="admin manager">🥛 Milk Recording</a>
+        <a href="#quality" data-route="quality" data-roles="admin manager">🧪 Milk Quality Tests</a>
+        <a href="#tanks" data-route="tanks" data-roles="admin manager">🧊 Inventory Tanks</a>
+        <a href="#pos" data-route="pos">🧾 Point of Sale</a>
+        <a href="#finance" data-route="finance" data-roles="admin manager accountant">💰 Financial Ledger</a>
+        <a href="#health" data-route="health" data-roles="admin manager">🩺 Health Events</a>
+        <a href="#tasks" data-route="tasks" data-roles="admin manager">✅ Tasks</a>
+        <a href="#employees" data-route="employees" data-roles="admin manager accountant">👥 Employees &amp; Leave</a>
+        <a href="#reports" data-route="reports" data-roles="admin manager accountant">📄 Reports</a>
+        <a href="#network" data-route="network" data-roles="admin manager accountant">🌐 Milk Network</a>
+        <a href="#users" data-route="users" data-roles="admin">🔐 Users</a>
+        <a href="#settings" data-route="settings" data-roles="admin">⚙️ Settings</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="theme-switcher" id="themeSwitcher">
+          <button type="button" class="theme-swatch" data-theme="green" title="Meadow Green" style="background:#178a3f;"></button>
+          <button type="button" class="theme-swatch" data-theme="ocean" title="Ocean Blue" style="background:#2563eb;"></button>
+          <button type="button" class="theme-swatch" data-theme="charcoal" title="Charcoal Dark" style="background:#1b1d1f;"></button>
+        </div>
+        <div id="userBadge" class="user-badge"></div>
+        <button id="logoutBtn" class="small" style="width:100%;">Log Out</button>
+        <p class="sidebar-copyright">© <span class="cyear"></span> Xeoscape</p>
+      </div>
+    </aside>
+    <main class="content">
+      <div id="view"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="js/api.js"></script>
+  <script src="js/views/dashboard.js"></script>
+  <script src="js/views/cows.js"></script>
+  <script src="js/views/milk.js"></script>
+  <script src="js/views/quality.js"></script>
+  <script src="js/views/tanks.js"></script>
+  <script src="js/views/pos.js"></script>
+  <script src="js/views/finance.js"></script>
+  <script src="js/views/health.js"></script>
+  <script src="js/views/tasks.js"></script>
+  <script src="js/views/employees.js"></script>
+  <script src="js/views/reports.js"></script>
+  <script src="js/views/network.js"></script>
+  <script src="js/views/users.js"></script>
+  <script src="js/views/settings.js"></script>
+  <script src="js/license.js"></script>
+  <script src="js/theme.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

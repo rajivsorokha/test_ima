@@ -1,0 +1,21 @@
+{
+  "name": "ima-langnubi-dairy-backend",
+  "version": "1.0.0",
+  "description": "Ima Langnubi Dairy - Node.js/Express + SQLite backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node db/seed.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "dayjs": "^1.11.13",
+    "express": "^4.21.0",
+    "json2csv": "^6.0.0-alpha.2",
+    "pdfkit": "^0.15.0",
+    "uuid": "^9.0.1"
+  }
+}
