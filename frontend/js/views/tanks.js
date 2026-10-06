@@ -43,7 +43,7 @@ async function renderTanks(view) {
       title: sign > 0 ? 'Fill Tank' : 'Draw Off from Tank',
       fields: [
         { name: 'date', label: 'Date', type: 'date', value: todayISO(), required: true },
-        { name: 'amount', label: 'Liters', type: 'number', step: '0.1', required: true },
+        { name: 'amount', label: 'Liters', type: 'number', step: '0.01', required: true },
         { name: 'reason', label: 'Reason', type: 'select', value: sign > 0 ? 'Collection' : 'Sale',
           options: ['Collection', 'Sale', 'Transfer', 'Spoilage', 'Adjustment'].map(r => ({ value: r, label: r })) },
         { name: 'notes', label: 'Notes' },

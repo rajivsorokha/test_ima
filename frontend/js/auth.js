@@ -8,6 +8,10 @@ function showApp(user) {
   document.getElementById('appShell').classList.remove('hidden');
   document.getElementById('userBadge').innerHTML = `<b>${user.name}</b><span class="role-pill">${roleLabel(user.role)}</span>`;
   applyRoleVisibility(user.role);
+  // Always land on the dashboard right after logging in, regardless of
+  // whatever page happened to be open before (e.g. last session, or
+  // wherever the idle-lock screen caught the user).
+  window.location.hash = '#dashboard';
   router();
 }
 

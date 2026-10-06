@@ -64,7 +64,7 @@ async function renderMilk(view) {
           options: [{ value: '', label: '— General Herd —' }, ...cows.map(c => ({ value: c.id, label: `${c.tag} ${c.name ? '(' + c.name + ')' : ''}` }))] },
         { name: 'date', label: 'Date', type: 'date', value: todayISO(), required: true },
         { name: 'session', label: 'Session', type: 'select', value: 'AM', options: [{ value: 'AM', label: 'AM' }, { value: 'PM', label: 'PM' }] },
-        { name: 'liters', label: 'Liters', type: 'number', step: '0.1', required: true },
+        { name: 'liters', label: 'Liters', type: 'number', step: '0.01', required: true },
         { name: 'notes', label: 'Notes', type: 'textarea' },
       ],
       submitLabel: 'Save',

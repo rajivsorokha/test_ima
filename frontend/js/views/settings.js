@@ -1,5 +1,6 @@
 async function renderSettings(view) {
   const health = await apiGet('/health').catch(() => ({ farm: 'Ima Langnubi Dairy', address: 'Thangmeiband Sinam Leikai, Imphal, Manipur' }));
+  const rules = await apiGet('/farms/delivery-rules').catch(() => null);
   let info = null;
   try { info = await apiGet('/backup/info'); } catch (e) { /* ignore */ }
 
@@ -18,6 +19,58 @@ async function renderSettings(view) {
         </tbody>
       </table>
       <p class="desc" style="margin-top:10px;">To change these, edit <code>FARM_NAME</code> / <code>FARM_ADDRESS</code> in <code>backend/.env</code> and restart the app.</p>
+
+    ${rules ? `</div>
+    <div class="card settings-section">
+      <h2>Delivery Rate Table</h2>
+      <p class="desc">Applied automatically in Milk Network → Milk Collection based on each farm's distance band, delivery time, season, and quantity. The late deduction is baked into the rate itself and shown on each farm's invoice. Edit any number below and press Save — no code changes or rebuild needed.</p>
+      <table>
+        <thead><tr><th>Distance</th><th>Quantity</th><th>Normal</th><th>1st Late</th><th>2nd Late</th><th>3rd Late</th></tr></thead>
+        <tbody>
+          <tr><td>Within 10 km</td><td>Under 20L</td>${rules.rate_table.within_10km.under20.map((r, i) => `<td><input type="number" step="0.5" class="rateInput" data-band="within_10km" data-qty="under20" data-i="${i}" value="${r}"></td>`).join('')}</tr>
+          <tr><td>Within 10 km</td><td>20L &amp; above</td>${rules.rate_table.within_10km.over20.map((r, i) => `<td><input type="number" step="0.5" class="rateInput" data-band="within_10km" data-qty="over20" data-i="${i}" value="${r}"></td>`).join('')}</tr>
+          <tr><td>10 km &amp; above</td><td>Under 20L</td>${rules.rate_table['10km_plus'].under20.map((r, i) => `<td><input type="number" step="0.5" class="rateInput" data-band="10km_plus" data-qty="under20" data-i="${i}" value="${r}"></td>`).join('')}</tr>
+          <tr><td>10 km &amp; above</td><td>20L &amp; above</td>${rules.rate_table['10km_plus'].over20.map((r, i) => `<td><input type="number" step="0.5" class="rateInput" data-band="10km_plus" data-qty="over20" data-i="${i}" value="${r}"></td>`).join('')}</tr>
+        </tbody>
+      </table>
+      <table style="margin-top:10px;">
+        <thead><tr><th>Season</th><th>Shift</th><th>Normal until</th><th>1st Late until</th><th>2nd Late until</th></tr></thead>
+        <tbody>
+          <tr><td>Winter (Oct–Mar)</td><td>Morning</td>
+            <td><input type="time" class="timeInput" data-season="winter" data-shift="AM" data-field="normal" value="${rules.seasons.winter.cutoffs.AM.normal}"></td>
+            <td><input type="time" class="timeInput" data-season="winter" data-shift="AM" data-field="late1" value="${rules.seasons.winter.cutoffs.AM.late1}"></td>
+            <td><input type="time" class="timeInput" data-season="winter" data-shift="AM" data-field="late2" value="${rules.seasons.winter.cutoffs.AM.late2}"></td></tr>
+          <tr><td>Winter (Oct–Mar)</td><td>Evening</td>
+            <td><input type="time" class="timeInput" data-season="winter" data-shift="PM" data-field="normal" value="${rules.seasons.winter.cutoffs.PM.normal}"></td>
+            <td><input type="time" class="timeInput" data-season="winter" data-shift="PM" data-field="late1" value="${rules.seasons.winter.cutoffs.PM.late1}"></td>
+            <td><input type="time" class="timeInput" data-season="winter" data-shift="PM" data-field="late2" value="${rules.seasons.winter.cutoffs.PM.late2}"></td></tr>
+          <tr><td>Summer (Apr–Sep)</td><td>Morning</td>
+            <td><input type="time" class="timeInput" data-season="summer" data-shift="AM" data-field="normal" value="${rules.seasons.summer.cutoffs.AM.normal}"></td>
+            <td><input type="time" class="timeInput" data-season="summer" data-shift="AM" data-field="late1" value="${rules.seasons.summer.cutoffs.AM.late1}"></td>
+            <td><input type="time" class="timeInput" data-season="summer" data-shift="AM" data-field="late2" value="${rules.seasons.summer.cutoffs.AM.late2}"></td></tr>
+          <tr><td>Summer (Apr–Sep)</td><td>Evening</td>
+            <td><input type="time" class="timeInput" data-season="summer" data-shift="PM" data-field="normal" value="${rules.seasons.summer.cutoffs.PM.normal}"></td>
+            <td><input type="time" class="timeInput" data-season="summer" data-shift="PM" data-field="late1" value="${rules.seasons.summer.cutoffs.PM.late1}"></td>
+            <td><input type="time" class="timeInput" data-season="summer" data-shift="PM" data-field="late2" value="${rules.seasons.summer.cutoffs.PM.late2}"></td></tr>
+        </tbody>
+      </table>
+      <button class="primary" id="saveRatesBtn" style="margin-top:12px;">Save Rate Table</button>` : ''}
+    </div>
+
+    <div class="card settings-section" id="qualityThresholdsCard">
+      <h2>Milk Quality Thresholds</h2>
+      <p class="desc">Quality Score = Lactometer + (Thermometer − 20) / 1.5. Edit the cutoffs or labels below.</p>
+      <div id="qualityThresholdsBody">Loading...</div>
+    </div>
+
+    <div class="card settings-section" id="networkSetupCard">
+      <h2>Network Setup — Share Data Across Computers</h2>
+      <p class="desc">
+        Let 2–3 computers on the same WiFi/network share one set of data, instead of each having its own separate
+        database. Pick <b>one</b> computer to be the Server (it holds the real data) — every other computer connects
+        to it as a Client.
+      </p>
+      <div id="networkSetupBody">Loading...</div>
     </div>
 
     <div class="card settings-section">
@@ -43,6 +96,24 @@ async function renderSettings(view) {
     </div>
 
     <div class="card settings-section">
+      <h2>Automatic Daily CSV Backup</h2>
+      <p class="desc">Every table (farms, collections, sales, finances, loans, etc.) is exported as its own CSV file into a dated folder, automatically, once a day at the time set below.</p>
+      <div class="form-row" style="max-width:220px;"><label>Backup Time</label><input type="time" id="csvBackupTime"></div>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:10px 0;">
+        <input type="checkbox" id="csvBackupEnabled" style="width:auto;"> Enabled
+      </label>
+      <div style="display:flex; gap:10px; align-items:center; margin-top:8px;">
+        <button class="primary" id="saveCsvScheduleBtn">Save Schedule</button>
+        <button id="runCsvNowBtn">Run Backup Now</button>
+      </div>
+      <p class="desc" id="csvLastRun" style="margin-top:10px;"></p>
+      <div style="margin-top:16px;">
+        <h2 style="font-size:14px; margin-bottom:8px;">Recent Backups</h2>
+        <div id="csvHistoryList"></div>
+      </div>
+    </div>
+
+    <div class="card settings-section">
       <h2>License</h2>
       <p class="desc">This software is licensed to ${health.farm} by Xeoscape.</p>
       <button id="viewLicenseBtn2">View License Agreement</button>
@@ -52,7 +123,7 @@ async function renderSettings(view) {
   document.getElementById('viewLicenseBtn2').addEventListener('click', () => openLicenseModal());
 
   document.getElementById('downloadBackupBtn').addEventListener('click', () => {
-    downloadWithAuth(`${API_BASE}/backup/download`, 'ima-langnubi-dairy-backup.db');
+    downloadWithAuth(`${API_BASE}/backup/download`, 'ima-langnubi-dairy-backup.db', 'Backup downloaded');
   });
 
   document.getElementById('restoreBtn').addEventListener('click', async () => {
@@ -74,6 +145,181 @@ async function renderSettings(view) {
       toast(err.message, true);
     }
   });
+
+  async function loadCsvSchedule() {
+    const sched = await apiGet('/backup/csv-schedule');
+    document.getElementById('csvBackupTime').value = sched.time;
+    document.getElementById('csvBackupEnabled').checked = sched.enabled;
+    document.getElementById('csvLastRun').textContent = sched.last_run_at
+      ? `Last ran: ${fmtDate(sched.last_run_date)} (${new Date(sched.last_run_at).toLocaleTimeString()})`
+      : 'Hasn\'t run yet.';
+  }
+
+  async function loadCsvHistory() {
+    const history = await apiGet('/backup/csv-history');
+    const list = document.getElementById('csvHistoryList');
+    list.innerHTML = history.length ? history.slice(0, 10).map(h => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px;">
+        <span>${fmtDate(h.date)} — ${h.files.length} file${h.files.length === 1 ? '' : 's'}</span>
+        <span>${h.files.map(f => `<a href="#" class="link csvDownloadLink" data-date="${h.date}" data-file="${f}" style="margin-left:8px;">${f.replace('.csv', '')}</a>`).join('')}</span>
+      </div>`).join('') : `<div class="empty-state">No backups yet.</div>`;
+    list.querySelectorAll('.csvDownloadLink').forEach(a => a.addEventListener('click', (e) => {
+      e.preventDefault();
+      downloadWithAuth(`${API_BASE}/backup/csv-download/${a.dataset.date}/${a.dataset.file}`, `${a.dataset.date}-${a.dataset.file}`);
+    }));
+  }
+
+  document.getElementById('saveCsvScheduleBtn').addEventListener('click', async () => {
+    try {
+      await apiPut('/backup/csv-schedule', {
+        time: document.getElementById('csvBackupTime').value,
+        enabled: document.getElementById('csvBackupEnabled').checked,
+      });
+      toast('Backup schedule saved');
+      loadCsvSchedule();
+    } catch (err) { toast(err.message, true); }
+  });
+
+  document.getElementById('runCsvNowBtn').addEventListener('click', async () => {
+    try {
+      await apiPost('/backup/csv-run-now', {});
+      toast('CSV backup completed');
+      loadCsvSchedule(); loadCsvHistory();
+    } catch (err) { toast(err.message, true); }
+  });
+
+  if (rules) {
+    document.getElementById('saveRatesBtn').addEventListener('click', async () => {
+      const rateTable = { within_10km: { under20: [0, 0, 0, 0], over20: [0, 0, 0, 0] }, '10km_plus': { under20: [0, 0, 0, 0], over20: [0, 0, 0, 0] } };
+      document.querySelectorAll('.rateInput').forEach((input) => {
+        rateTable[input.dataset.band][input.dataset.qty][Number(input.dataset.i)] = Number(input.value);
+      });
+      const seasons = { winter: { cutoffs: { AM: {}, PM: {} } }, summer: { cutoffs: { AM: {}, PM: {} } } };
+      document.querySelectorAll('.timeInput').forEach((input) => {
+        seasons[input.dataset.season].cutoffs[input.dataset.shift][input.dataset.field] = input.value;
+      });
+      try {
+        await apiPut('/farms/delivery-rules', { rate_table: rateTable, seasons });
+        toast('Delivery rate table saved');
+      } catch (err) { toast(err.message, true); }
+    });
+  }
+
+  async function loadNetworkSetup() {
+    const body = document.getElementById('networkSetupBody');
+    if (!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)) {
+      body.innerHTML = `<p class="desc">Only available in the installed desktop app.</p>`;
+      return;
+    }
+    const config = await window.__TAURI__.core.invoke('get_network_config');
+    const health = await apiGet('/health').catch(() => null);
+
+    body.innerHTML = `
+      <div class="form-row">
+        <label style="display:flex; align-items:center; gap:8px;"><input type="radio" name="netMode" value="server" ${config.mode !== 'client' ? 'checked' : ''} style="width:auto;"> This is the main computer (Server) — holds the real data</label>
+      </div>
+      <div class="form-row">
+        <label style="display:flex; align-items:center; gap:8px;"><input type="radio" name="netMode" value="client" ${config.mode === 'client' ? 'checked' : ''} style="width:auto;"> Connect to another computer (Client)</label>
+      </div>
+      <div id="netModeDetail"></div>
+      <button class="primary" id="saveNetworkBtn" style="margin-top:10px;">Save Network Setting</button>
+      <p class="desc" id="netSaveNote" style="margin-top:8px;"></p>
+    `;
+
+    function renderDetail(mode) {
+      const detail = document.getElementById('netModeDetail');
+      if (mode === 'server') {
+        const detected = health && health.local_ips ? health.local_ips : [];
+        const current = config.preferred_ip || detected[0] || '';
+        detail.innerHTML = `
+          <div class="form-row" style="max-width:280px;"><label>Address to give Client computers</label>
+            <input type="text" id="preferredIpInput" placeholder="e.g. 192.168.1.42" value="${current}"></div>
+          <p class="desc" style="margin-top:2px;">
+            ${detected.length
+              ? `Auto-detected on this computer: ${detected.map(ip => `<a href="#" class="link useDetectedIp" data-ip="${ip}">${ip}</a>`).join(', ')}. Click one to use it, or type your own if you know a different address is correct (e.g. when this computer has more than one network adapter — WiFi and Ethernet both active — or a fixed/static address set on your router).`
+              : `No address auto-detected yet — make sure this app is fully open, or type the address manually if you already know it (check with "ipconfig" in Command Prompt on Windows).`}
+          </p>
+          <p class="desc">Windows Firewall may ask permission the first time another computer connects — choose Allow (at least for Private networks). This works the same whether computers are on WiFi or connected by Ethernet cable through a switch/hub — what matters is that they're all on the same local network.</p>`;
+        detail.querySelectorAll('.useDetectedIp').forEach(a => a.addEventListener('click', (e) => {
+          e.preventDefault();
+          document.getElementById('preferredIpInput').value = a.dataset.ip;
+        }));
+      } else {
+        detail.innerHTML = `
+          <div class="form-row" style="max-width:280px;"><label>Server's Address</label><input type="text" id="serverIpInput" placeholder="e.g. 192.168.1.42" value="${config.server_ip || ''}"></div>
+          <button type="button" id="testConnBtn" class="small">Test Connection</button>
+          <span id="testConnResult" style="margin-left:8px; font-size:12.5px;"></span>
+        `;
+        document.getElementById('testConnBtn').addEventListener('click', async () => {
+          const ip = document.getElementById('serverIpInput').value.trim();
+          const resultEl = document.getElementById('testConnResult');
+          if (!ip) { resultEl.textContent = 'Enter an address first.'; resultEl.style.color = '#c0392b'; return; }
+          resultEl.textContent = 'Testing...'; resultEl.style.color = 'var(--muted)';
+          try {
+            const res = await fetch(`http://${ip}:4000/api/health`, { cache: 'no-store' });
+            if (!res.ok) throw new Error('bad response');
+            const data = await res.json();
+            resultEl.textContent = `Connected — reached "${data.farm}"`; resultEl.style.color = '#178a3f';
+          } catch (err) {
+            resultEl.textContent = 'Could not reach that address. Check the IP, that both computers are on the same network, and that the Server app is open.';
+            resultEl.style.color = '#c0392b';
+          }
+        });
+      }
+    }
+    renderDetail(config.mode === 'client' ? 'client' : 'server');
+    document.querySelectorAll('input[name="netMode"]').forEach(r => r.addEventListener('change', (e) => renderDetail(e.target.value)));
+
+    document.getElementById('saveNetworkBtn').addEventListener('click', async () => {
+      const mode = document.querySelector('input[name="netMode"]:checked').value;
+      const ipInput = document.getElementById('serverIpInput');
+      const preferredInput = document.getElementById('preferredIpInput');
+      const serverIp = mode === 'client' ? (ipInput ? ipInput.value.trim() : '') : '';
+      const preferredIp = mode === 'server' ? (preferredInput ? preferredInput.value.trim() : '') : (config.preferred_ip || '');
+      if (mode === 'client' && !serverIp) { toast('Enter the Server\'s address first', true); return; }
+      try {
+        await window.__TAURI__.core.invoke('save_network_config', { mode, serverIp, preferredIp });
+        document.getElementById('netSaveNote').innerHTML = '<b>Saved.</b> Please fully close and reopen the app for this to take effect.';
+        toast('Network setting saved — restart the app to apply it');
+      } catch (err) { toast('Could not save: ' + err, true); }
+    });
+  }
+  loadNetworkSetup();
+
+  async function loadQualityThresholds() {
+    const t = await apiGet('/quality-tests/thresholds').catch(() => null);
+    const body = document.getElementById('qualityThresholdsBody');
+    if (!t) { body.innerHTML = '<p class="desc">Could not load thresholds.</p>'; return; }
+    body.innerHTML = `
+      <table>
+        <thead><tr><th>Grade</th><th>Label</th><th>Applies when score is...</th></tr></thead>
+        <tbody>
+          <tr><td>Low</td><td><input type="text" id="qLowLabel" value="${t.low_label}"></td><td>below <input type="number" step="0.1" id="qLowMax" value="${t.low_max}" style="width:70px;"></td></tr>
+          <tr><td>Warning</td><td><input type="text" id="qWarnLabel" value="${t.warning_label}"></td><td><span id="qLowMaxEcho">${t.low_max}</span> up to below <input type="number" step="0.1" id="qWarnMax" value="${t.warning_max}" style="width:70px;"></td></tr>
+          <tr><td>Good</td><td><input type="text" id="qGoodLabel" value="${t.good_label}"></td><td><span id="qWarnMaxEcho">${t.warning_max}</span> and above</td></tr>
+        </tbody>
+      </table>
+      <button class="primary" id="saveQualityThresholdsBtn" style="margin-top:12px;">Save Thresholds</button>
+    `;
+    document.getElementById('qLowMax').addEventListener('input', (e) => { document.getElementById('qLowMaxEcho').textContent = e.target.value; });
+    document.getElementById('qWarnMax').addEventListener('input', (e) => { document.getElementById('qWarnMaxEcho').textContent = e.target.value; });
+    document.getElementById('saveQualityThresholdsBtn').addEventListener('click', async () => {
+      try {
+        await apiPut('/quality-tests/thresholds', {
+          low_max: Number(document.getElementById('qLowMax').value),
+          warning_max: Number(document.getElementById('qWarnMax').value),
+          low_label: document.getElementById('qLowLabel').value,
+          warning_label: document.getElementById('qWarnLabel').value,
+          good_label: document.getElementById('qGoodLabel').value,
+        });
+        toast('Quality thresholds saved');
+      } catch (err) { toast(err.message, true); }
+    });
+  }
+  loadQualityThresholds();
+
+  loadCsvSchedule();
+  loadCsvHistory();
 }
 
 function formatBytes(bytes) {
@@ -84,19 +330,5 @@ function formatBytes(bytes) {
   return `${n.toFixed(1)} ${units[i]}`;
 }
 
-async function downloadWithAuth(url, filename) {
-  try {
-    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${getAuthToken()}` } });
-    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.error || 'Download failed'); }
-    const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    toast('Backup downloaded');
-  } catch (err) {
-    toast(err.message, true);
-  }
-}
+
+

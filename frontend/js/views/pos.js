@@ -1,5 +1,13 @@
 async function renderPos(view) {
-  const [summary, products] = await Promise.all([apiGet('/pos/summary'), apiGet('/products')]);
+  // Clear any previous auto-refresh interval/listener from an earlier
+  // visit to this page — renderPos re-runs every time the user
+  // navigates back here, and without this, old ones would keep piling
+  // up in the background (and could throw once this page's elements no
+  // longer exist in the DOM).
+  if (window.__posMilkRefreshInterval) clearInterval(window.__posMilkRefreshInterval);
+  if (window.__posFocusHandler) window.removeEventListener('focus', window.__posFocusHandler);
+
+  const [summary, products, milkAvail] = await Promise.all([apiGet('/pos/summary'), apiGet('/products'), apiGet('/pos/milk-availability')]);
   let cart = []; // [{product, qty, unit_price}]
   let categoryFilter = 'All';
   let saleDate = todayISO();
@@ -15,6 +23,7 @@ async function renderPos(view) {
       <div class="stat-card"><div class="label">Today's Revenue</div><div class="value">${fmtMoney(summary.today_revenue)}</div></div>
       <div class="stat-card"><div class="label">Today's Transactions</div><div class="value">${summary.today_transactions}</div></div>
       <div class="stat-card"><div class="label">Today's Milk Sold</div><div class="value">${fmtLiters(summary.today_milk_liters)}</div></div>
+      <div class="stat-card"><div class="label">Fresh Milk Remaining <button type="button" id="refreshMilkBtn" class="small" style="padding:1px 6px; font-size:10px; margin-left:4px;" title="Recheck now">↻</button></div><div class="value" id="milkRemainingVal" style="${milkAvail.remaining <= 0 ? 'color:#c0392b;' : ''}">${fmtLiters(milkAvail.remaining)}</div></div>
       <div class="stat-card"><div class="label">Monthly Revenue</div><div class="value">${fmtMoney(summary.month_revenue)}</div></div>
     </div>
 
@@ -170,7 +179,7 @@ async function renderPos(view) {
           <div class="cname">${c.product.name}</div>
           <div class="cmeta">${c.product.category}</div>
         </div>
-        <input type="number" min="0.1" step="0.1" value="${c.qty}" class="qtyInput" data-i="${i}" />
+        <input type="number" min="0.01" step="0.01" value="${c.qty}" class="qtyInput" data-i="${i}" />
         <input type="number" min="0" step="0.01" value="${c.unit_price}" class="priceInput" data-i="${i}" title="Price per unit (editable)" />
         <span style="width:66px; text-align:right; font-weight:600;">${fmtMoney(c.qty * c.unit_price)}</span>
         <button type="button" class="small danger removeBtn" data-i="${i}">✕</button>
@@ -200,6 +209,30 @@ async function renderPos(view) {
   });
   document.getElementById('deliveryCharge').addEventListener('input', renderTotals);
 
+  async function refreshStats() {
+    // Guard: this can fire (via the focus/interval handlers) after the
+    // user has navigated away from POS to a different page, in which
+    // case these elements no longer exist — just skip silently.
+    if (!document.getElementById('milkRemainingVal')) return;
+    const s = await apiGet('/pos/summary');
+    const avail = await apiGet('/pos/milk-availability');
+    const vals = document.querySelectorAll('.stat-grid .value');
+    vals[0].textContent = fmtMoney(s.today_revenue);
+    vals[1].textContent = s.today_transactions;
+    vals[2].textContent = fmtLiters(s.today_milk_liters);
+    vals[4].textContent = fmtMoney(s.month_revenue);
+    document.getElementById('milkRemainingVal').textContent = fmtLiters(avail.remaining);
+    document.getElementById('milkRemainingVal').style.color = avail.remaining <= 0 ? '#c0392b' : '';
+  }
+  document.getElementById('refreshMilkBtn').addEventListener('click', () => { refreshStats(); toast('Rechecked'); });
+  // Auto-recheck every 20s while this page is open, and immediately when
+  // the app window regains focus — covers the case where a collection
+  // was logged elsewhere and this page was just left sitting open rather
+  // than being freshly navigated to.
+  window.__posMilkRefreshInterval = setInterval(refreshStats, 20000);
+  window.__posFocusHandler = refreshStats;
+  window.addEventListener('focus', window.__posFocusHandler);
+
   document.getElementById('checkoutBtn').addEventListener('click', async () => {
     if (!cart.length) return toast('Add at least one item to the cart', true);
     const payload = {
@@ -222,12 +255,7 @@ async function renderPos(view) {
       cart = []; renderCart();
       document.getElementById('custName').value = '';
       document.getElementById('custPhone').value = '';
-      const s = await apiGet('/pos/summary');
-      const vals = document.querySelectorAll('.stat-grid .value');
-      vals[0].textContent = fmtMoney(s.today_revenue);
-      vals[1].textContent = s.today_transactions;
-      vals[2].textContent = fmtLiters(s.today_milk_liters);
-      vals[3].textContent = fmtMoney(s.month_revenue);
+      await refreshStats();
     } catch (err) { toast(err.message, true); }
   });
 
@@ -316,19 +344,30 @@ async function renderPos(view) {
   // ---------- Product management ----------
   async function loadProductManagement() {
     const all = await apiGet('/products?status=All');
+    const milkAvailForTable = await apiGet('/pos/milk-availability').catch(() => null);
     const rows = document.getElementById('productMgmtRows');
-    rows.innerHTML = all.length ? all.map(p => `
-      <tr>
+    rows.innerHTML = all.length ? all.map(p => {
+      let stockCell = p.track_stock ? p.stock_qty : '—';
+      if (p.category === 'Milk') {
+        // "Stock Quantity" is intentionally unused for Milk (see the Edit
+        // form) — the real, live number comes from Milk Recording +
+        // Milk Network collections instead, shown here so this table
+        // doesn't look like it's reporting zero/no stock.
+        stockCell = milkAvailForTable ? `${fmtLiters(milkAvailForTable.remaining)} today (live)` : '—';
+      }
+      return `<tr>
         <td>${p.name}</td><td>${p.category}</td><td>${p.unit}</td><td>${fmtMoney(p.price)}</td>
-        <td>${p.track_stock ? p.stock_qty : '—'}</td>
+        <td>${stockCell}</td>
         <td><span class="pill ${p.status === 'Active' ? 'green' : 'gray'}">${p.status}</span></td>
         <td>
           <button class="small editProductBtn" data-id="${p.id}">Edit</button>
           ${p.status === 'Active'
             ? `<button class="small danger discontinueBtn" data-id="${p.id}">Discontinue</button>`
-            : `<button class="small reactivateBtn" data-id="${p.id}">Reactivate</button>`}
+            : `<button class="small reactivateBtn" data-id="${p.id}">Reactivate</button>
+               <button class="small danger permanentDeleteBtn" data-id="${p.id}" data-name="${p.name}">Delete Permanently</button>`}
         </td>
-      </tr>`).join('') : `<tr><td colspan="7"><div class="empty-state">No products yet.</div></td></tr>`;
+      </tr>`;
+    }).join('') : `<tr><td colspan="7"><div class="empty-state">No products yet.</div></td></tr>`;
 
     rows.querySelectorAll('.editProductBtn').forEach(b => b.addEventListener('click', () => editProduct(all.find(p => p.id === Number(b.dataset.id)))));
     rows.querySelectorAll('.discontinueBtn').forEach(b => b.addEventListener('click', async () => {
@@ -338,6 +377,13 @@ async function renderPos(view) {
     }));
     rows.querySelectorAll('.reactivateBtn').forEach(b => b.addEventListener('click', async () => {
       await apiPut(`/products/${b.dataset.id}`, { status: 'Active' }); toast('Product reactivated'); loadProductManagement(); refreshProducts();
+    }));
+    rows.querySelectorAll('.permanentDeleteBtn').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm(`Permanently delete "${b.dataset.name}"? This cannot be undone. (Only allowed if it has no past sales — otherwise this will be blocked automatically.)`)) return;
+      try {
+        await apiDelete(`/products/${b.dataset.id}/permanent`);
+        toast('Product permanently deleted'); loadProductManagement(); refreshProducts();
+      } catch (err) { toast(err.message, true); }
     }));
   }
 
@@ -356,16 +402,41 @@ async function renderPos(view) {
   }
 
   function editProduct(p) {
-    openModal({
+    const overlay = openModal({
       title: 'Edit Product', fields: productFields(p), submitLabel: 'Save Changes',
-      onSubmit: async (data, overlay) => {
+      extraHtml: `<div style="margin-top:4px; display:flex; gap:8px;">
+        <button type="button" id="deleteProductInModalBtn" class="small danger">${p.status === 'Active' ? 'Discontinue Product' : 'Reactivate Product'}</button>
+        ${p.status !== 'Active' ? `<button type="button" id="permanentDeleteInModalBtn" class="small danger">Delete Permanently</button>` : ''}
+      </div>`,
+      onSubmit: async (data, ov) => {
         await apiPut(`/products/${p.id}`, {
           ...data, price: Number(data.price), stock_qty: Number(data.stock_qty),
           token_liters: data.token_liters ? Number(data.token_liters) : null,
         });
-        overlay.remove(); toast('Product updated'); loadProductManagement(); refreshProducts();
+        ov.remove(); toast('Product updated'); loadProductManagement(); refreshProducts();
       }
     });
+    overlay.querySelector('#deleteProductInModalBtn').addEventListener('click', async () => {
+      if (p.status === 'Active') {
+        if (!confirm('Discontinue this product? It will no longer show up at the till, but past sales referencing it are kept intact.')) return;
+        await apiDelete(`/products/${p.id}`);
+        toast('Product discontinued');
+      } else {
+        await apiPut(`/products/${p.id}`, { status: 'Active' });
+        toast('Product reactivated');
+      }
+      overlay.remove(); loadProductManagement(); refreshProducts();
+    });
+    const permBtn = overlay.querySelector('#permanentDeleteInModalBtn');
+    if (permBtn) {
+      permBtn.addEventListener('click', async () => {
+        if (!confirm(`Permanently delete "${p.name}"? This cannot be undone. (Only allowed if it has no past sales — otherwise this will be blocked automatically.)`)) return;
+        try {
+          await apiDelete(`/products/${p.id}/permanent`);
+          overlay.remove(); toast('Product permanently deleted'); loadProductManagement(); refreshProducts();
+        } catch (err) { toast(err.message, true); }
+      });
+    }
   }
 
   document.getElementById('addProductBtn').addEventListener('click', () => {

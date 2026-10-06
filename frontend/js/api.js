@@ -17,7 +17,26 @@ function resolveApiBase() {
   const isWebProtocol = window.location.protocol === 'http:' || window.location.protocol === 'https:';
   return isWebProtocol ? window.location.origin : 'http://localhost:4000';
 }
-const API_BASE = resolveApiBase() + '/api';
+let API_BASE = resolveApiBase() + '/api';
+
+// Multi-computer (LAN) mode: if this computer is configured as a
+// "Client" (Settings -> Network Setup), point every API call at the
+// Server computer's IP instead of this machine's own localhost. Runs
+// once at startup; by the time any real API call happens (after the
+// startup health-check screen finishes, or the login form is submitted)
+// this has always already resolved, since it's just a fast local IPC
+// call to the Tauri backend, not a network request.
+(async function applyNetworkConfig() {
+  if (!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)) return;
+  try {
+    const config = await window.__TAURI__.core.invoke('get_network_config');
+    if (config && config.mode === 'client' && config.server_ip) {
+      API_BASE = `http://${config.server_ip}:4000/api`;
+    }
+  } catch (err) {
+    // Not fatal — just stays on the default (this machine as its own server).
+  }
+})();
 
 const ROLE_LABELS = { admin: 'Owner/Admin', manager: 'Manager', accountant: 'Accountant', salesman: 'Salesman' };
 function roleLabel(role) { return ROLE_LABELS[role] || role; }
@@ -75,8 +94,22 @@ function fmtDate(d) {
   if (isNaN(dt)) return d;
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
-function todayISO() { return new Date().toISOString().slice(0, 10); }
-function daysAgoISO(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
+// Returns "YYYY-MM-DD" using the browser's LOCAL calendar date, not UTC.
+// toISOString() converts to UTC first, which silently shifts the date
+// during early-morning hours for any timezone ahead of UTC — India
+// (UTC+5:30) loses this between midnight and 5:30 AM, which is exactly
+// when morning milk collection happens. That mismatch was making
+// morning-logged collections file under "yesterday", invisible to
+// same-day lookups elsewhere in the app (e.g. POS's Fresh Milk stock).
+function localDateISO(date) {
+  const d = date || new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+function todayISO() { return localDateISO(); }
+function daysAgoISO(n) { const d = new Date(); d.setDate(d.getDate() - n); return localDateISO(d); }
 
 function toast(msg, isError = false) {
   const el = document.getElementById('toast');
@@ -188,11 +221,62 @@ function buildReceiptHtml(sale) {
   </body></html>`;
 }
 
+function isTauriRuntime() {
+  return !!(window.__TAURI__ || window.__TAURI_INTERNALS__);
+}
+
+// Opens a URL properly regardless of environment: inside the Tauri app,
+// window.open() for an external link is unreliable — WebView2 doesn't
+// consistently hand it off to the system browser, and this can differ
+// across WebView2 versions on different PCs (which is exactly why this
+// worked on one machine and not another). Route it through the Rust
+// `open_url` command instead, which uses the OS's own "open" mechanism.
+// Falls back to window.open() when running as a plain web page (no Tauri).
+function openExternalUrl(url) {
+  if (isTauriRuntime() && window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+    window.__TAURI__.core.invoke('open_url', { url }).catch((err) => {
+      toast('Could not open link: ' + err, true);
+    });
+  } else {
+    window.open(url, '_blank');
+  }
+}
+
+// Prints a receipt WITHOUT relying on window.open() creating a real
+// popup window — that's the other place popups are unreliable inside a
+// Tauri webview (same root cause as the WhatsApp link issue). Instead
+// this renders the receipt into a hidden iframe inside the current page
+// and prints that iframe directly, which stays within the single Tauri
+// window and works consistently.
+function printHtmlContent(html) {
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'fixed';
+  iframe.style.left = '-9999px';
+  iframe.style.top = '0';
+  iframe.style.width = '480px';
+  iframe.style.height = '720px';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    } catch (err) {
+      toast("Couldn't open the print dialog: " + err.message, true);
+    }
+  };
+  const cleanup = () => setTimeout(() => iframe.remove(), 1000);
+  window.addEventListener('afterprint', cleanup, { once: true });
+  // Fallback cleanup in case afterprint never fires (e.g. dialog cancelled
+  // in a way that doesn't trigger it on some WebView2 versions).
+  setTimeout(cleanup, 30000);
+
+  iframe.srcdoc = html;
+}
+
 function openReceipt(sale) {
-  const win = window.open('', '_blank', 'width=480,height=720');
-  if (!win) { toast('Please allow pop-ups to view the printable bill', true); return; }
-  win.document.write(buildReceiptHtml(sale));
-  win.document.close();
+  printHtmlContent(buildReceiptHtml(sale));
 }
 
 function whatsappReceiptText(sale) {
@@ -220,7 +304,76 @@ function sendReceiptOnWhatsApp(sale) {
     phone = entered.replace(/[^0-9]/g, '');
   }
   const url = `https://wa.me/${phone}?text=${encodeURIComponent(whatsappReceiptText(sale))}`;
-  window.open(url, '_blank');
+  openExternalUrl(url);
+}
+
+// ---------- Loan repayment receipt ----------
+function buildLoanReceiptHtml(loan, repayment) {
+  const typeLabel = { member: 'Member', staff: 'Staff', landlord: 'Landlord' }[loan.borrower_type] || loan.borrower_type;
+  const termLabel = loan.kind === 'long' ? 'Long term' : 'Short term';
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Repayment Receipt — Ima Langnubi Dairy</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; padding: 24px; color: #23281f; max-width: 420px; margin: 0 auto; }
+    .head { text-align: center; margin-bottom: 16px; }
+    .head h1 { font-size: 17px; margin: 0; color: #178a3f; }
+    .head p { font-size: 11px; color: #767a6f; margin: 2px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 14px 0; }
+    td { padding: 5px 2px; border-bottom: 1px solid #e7e3d8; }
+    .totals .grand { font-weight: 700; font-size: 15px; border-top: 1px solid #23281f; margin-top: 8px; padding-top: 8px; display: flex; justify-content: space-between; }
+    .no-print button { font-size: 13px; padding: 8px 16px; border-radius: 8px; border: 1px solid #178a3f; background: #178a3f; color: #fff; cursor: pointer; }
+    @media print { .no-print { display: none; } }
+  </style></head><body>
+    <div class="head">
+      <h1>Ima Langnubi Dairy</h1>
+      <p>Thangmeiband Sinam Leikai, Imphal, Manipur</p>
+      <p>Loan Repayment Receipt</p>
+    </div>
+    <table>
+      <tr><td>Date</td><td style="text-align:right;">${fmtDate(repayment.date)}</td></tr>
+      <tr><td>Borrower</td><td style="text-align:right;">${loan.borrower_name} (${typeLabel})</td></tr>
+      <tr><td>Loan #${loan.id}</td><td style="text-align:right;">${termLabel}</td></tr>
+      <tr><td>Interest Accrued</td><td style="text-align:right;">${fmtMoney(repayment.interest_accrued || 0)}</td></tr>
+      <tr><td>Source</td><td style="text-align:right;">${repayment.source === 'invoice' ? 'Auto (milk invoice)' : 'Manual'}</td></tr>
+    </table>
+    <div class="totals">
+      <div class="grand"><span>Amount Paid</span><span>${fmtMoney(repayment.amount_paid)}</span></div>
+      <div style="margin-top:8px; font-size:12px; color:#767a6f; display:flex; justify-content:space-between;"><span>Remaining Balance</span><span>${fmtMoney(loan.balance)}</span></div>
+    </div>
+    <p style="text-align:center; font-size:11px; color:#767a6f; margin-top:20px;">Thank you!</p>
+    <div class="no-print" style="text-align:center; margin-top:18px;"><button onclick="window.print()">Print / Save as PDF</button></div>
+  </body></html>`;
+}
+
+function openLoanReceipt(loan, repayment) {
+  printHtmlContent(buildLoanReceiptHtml(loan, repayment));
+}
+
+function loanReceiptWhatsAppText(loan, repayment) {
+  const typeLabel = { member: 'Member', staff: 'Staff', landlord: 'Landlord' }[loan.borrower_type] || loan.borrower_type;
+  const lines = [
+    `*Ima Langnubi Dairy* — Loan Repayment Receipt`,
+    `Thangmeiband Sinam Leikai, Imphal, Manipur`,
+    `Date: ${fmtDate(repayment.date)}`,
+    `Borrower: ${loan.borrower_name} (${typeLabel})`,
+    `Loan #${loan.id} — ${loan.kind === 'long' ? 'Long term' : 'Short term'}`,
+    '',
+    `*Amount Paid: ${fmtMoney(repayment.amount_paid)}*`,
+    `Remaining Balance: ${fmtMoney(loan.balance)}`,
+    '',
+    'Thank you!'
+  ];
+  return lines.join('\n');
+}
+
+function sendLoanReceiptOnWhatsApp(loan, repayment, phoneHint) {
+  let phone = (phoneHint || '').replace(/[^0-9]/g, '');
+  if (!phone) {
+    const entered = prompt('Enter a phone number to send this receipt via WhatsApp (with country code):');
+    if (!entered) return;
+    phone = entered.replace(/[^0-9]/g, '');
+  }
+  const url = `https://wa.me/${phone}?text=${encodeURIComponent(loanReceiptWhatsAppText(loan, repayment))}`;
+  openExternalUrl(url);
 }
 
 function openModal({ title, fields, submitLabel = 'Save', onSubmit, extraHtml = '' }) {
@@ -261,4 +414,26 @@ function openModal({ title, fields, submitLabel = 'Save', onSubmit, extraHtml = 
     }
   });
   return overlay;
+}
+
+// Downloads a file via fetch+blob rather than window.open(). Same reason
+// as openExternalUrl/openReceipt above: a Tauri webview's handling of
+// window.open() for a fetch/download isn't reliably consistent, so this
+// avoids that whole class of problem for any authenticated download
+// (reports, backups, statements).
+async function downloadWithAuth(url, filename, successMessage) {
+  try {
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${getAuthToken()}` } });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.error || 'Download failed'); }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast(successMessage || 'Downloaded');
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
