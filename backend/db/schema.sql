@@ -19,6 +19,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT
 );
 
+-- Generic admin-configurable key/value settings (e.g. daily CSV backup
+-- time). Deliberately generic so future settings don't each need a new
+-- column/table.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
 -- =========================== FARMS & HERD ===========================
 CREATE TABLE IF NOT EXISTS farms (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +37,12 @@ CREATE TABLE IF NOT EXISTS farms (
   notes TEXT,
   is_home INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Active',
+  distance_band TEXT NOT NULL DEFAULT 'within_10km', -- 'within_10km' or '10km_plus' — used for the delivery rate table
+  share_deposit REAL NOT NULL DEFAULT 0, -- member's cooperative share capital, used as loan backing (only meaningful once Approved)
+  membership_status TEXT NOT NULL DEFAULT 'Pending', -- 'Pending' or 'Approved' — a Pending member cannot receive a Loan/Borrow
+  approved_at TEXT, -- set when moved to Approved
+  approved_by TEXT, -- name of the admin who approved them
+  feed_medicine_deposit REAL NOT NULL DEFAULT 0, -- amount deposited to enable feed/medicine purchases; tracked only, not auto-enforced
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -40,6 +54,8 @@ CREATE TABLE IF NOT EXISTS cows (
   breed TEXT NOT NULL DEFAULT 'Crossbreed',
   date_of_birth TEXT,
   status TEXT NOT NULL DEFAULT 'Active',
+  no_of_calving INTEGER NOT NULL DEFAULT 0, -- parity — how many times she's calved
+  optimum_yield REAL, -- target/expected yield for her (liters/day), for comparison against actual present production
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -80,8 +96,13 @@ CREATE TABLE IF NOT EXISTS milk_collections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
   date TEXT NOT NULL,
+  session TEXT NOT NULL DEFAULT 'AM', -- AM (morning) or PM (evening) delivery
+  delivered_at TEXT, -- time of day, "HH:MM", used for earliest/late bonus-penalty calc
   liters REAL NOT NULL,
   rate_per_liter REAL NOT NULL DEFAULT 0,
+  bonus_amount REAL NOT NULL DEFAULT 0, -- awarded to the earliest delivery per date+session
+  penalty_amount REAL NOT NULL DEFAULT 0, -- charged for deliveries after the shift cutoff
+  bonus_note TEXT,
   tank_id INTEGER REFERENCES inventory_tanks(id) ON DELETE SET NULL,
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -93,6 +114,13 @@ CREATE TABLE IF NOT EXISTS milk_quality_tests (
   farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
   collection_id INTEGER REFERENCES milk_collections(id) ON DELETE SET NULL,
   date TEXT NOT NULL,
+  session TEXT NOT NULL DEFAULT 'AM', -- AM or PM, matches Milk Collection shifts
+  lactometer_reading REAL,
+  thermometer_reading REAL,
+  quality_score REAL, -- computed: lactometer + (thermometer - 20) / 1.5
+  quality_label TEXT, -- 'Low Quality' (<31), 'Warning' (31-32), 'Good' (32+) — editable in Settings
+  -- fat_percent/snf_percent/density kept for any pre-existing records from
+  -- before the lactometer/thermometer format; no longer shown for new tests.
   fat_percent REAL,
   snf_percent REAL,
   density REAL,
@@ -224,6 +252,63 @@ CREATE TABLE IF NOT EXISTS tokens (
   redeemed_at TEXT
 );
 
+-- "Loan" and "Borrow" both live here, distinguished by `kind`:
+--  - 'borrow': a quick advance small enough to be recovered from the
+--    member's milk bill within the same month — no guarantor needed.
+--  - 'loan': bigger than one month's milk earnings can cover — backed by
+--    the member's share deposit PLUS 1-2 guarantors (other members),
+--    repaid via a fixed installment auto-deducted each invoice cycle.
+-- Both charge interest, applied to the outstanding balance each time an
+-- invoice touches this loan (see invoices.js).
+-- "Loan" (long term) and "Borrow" (short term) both live here — matches
+-- the society's actual loan policy across three borrower categories:
+--   - Member: backed by share deposit / milk bill balance
+--   - Staff:  backed by salary
+--   - Landlord: backed by rent amount owed to them
+-- Short term = recoverable within about a month, no guarantor needed.
+-- Long term = up to ~10 months, needs 1-2 guarantors (society members),
+-- and is flagged a Defaulter if still unpaid past 10 months.
+-- Both terms charge interest (default 2%/month) on the outstanding balance.
+CREATE TABLE IF NOT EXISTS landlords (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  contact_phone TEXT,
+  rent_amount REAL NOT NULL DEFAULT 0, -- monthly rent owed to them, used as loan eligibility backing
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS loans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  borrower_type TEXT NOT NULL DEFAULT 'member', -- 'member', 'staff', or 'landlord'
+  farm_id INTEGER REFERENCES farms(id) ON DELETE CASCADE, -- set when borrower_type = 'member'
+  employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE, -- set when borrower_type = 'staff'
+  landlord_id INTEGER REFERENCES landlords(id) ON DELETE CASCADE, -- set when borrower_type = 'landlord'
+  kind TEXT NOT NULL DEFAULT 'short', -- 'short' (short term) or 'long' (long term)
+  principal REAL NOT NULL,
+  interest_rate REAL NOT NULL DEFAULT 2, -- percent per month, applied to outstanding balance
+  installment_amount REAL, -- 'long': fixed per-cycle deduction target. 'short': null = clear in full next cycle.
+  guarantor1_farm_id INTEGER REFERENCES farms(id) ON DELETE SET NULL,
+  guarantor2_farm_id INTEGER REFERENCES farms(id) ON DELETE SET NULL,
+  date_issued TEXT NOT NULL,
+  balance REAL NOT NULL, -- outstanding principal + accrued interest
+  status TEXT NOT NULL DEFAULT 'Active', -- Active, Closed
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS loan_repayments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  loan_id INTEGER NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  interest_accrued REAL NOT NULL DEFAULT 0,
+  amount_paid REAL NOT NULL,
+  source TEXT NOT NULL DEFAULT 'invoice', -- 'invoice' (auto-deducted) or 'manual' (cash/bank)
+  invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
@@ -231,6 +316,10 @@ CREATE TABLE IF NOT EXISTS invoices (
   period_end TEXT NOT NULL,
   total_liters REAL NOT NULL,
   rate_per_liter REAL NOT NULL,
+  total_bonus REAL NOT NULL DEFAULT 0,
+  total_penalty REAL NOT NULL DEFAULT 0,
+  total_loan_deduction REAL NOT NULL DEFAULT 0, -- withheld this cycle for active Loans/Borrows
+  net_payout REAL NOT NULL DEFAULT 0, -- total_amount - total_loan_deduction; what's actually paid out
   total_amount REAL NOT NULL,
   status TEXT NOT NULL DEFAULT 'Unpaid',
   generated_at TEXT NOT NULL DEFAULT (datetime('now'))
