@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
+const { localDateISO } = require('../utils/helpers');
 
 router.get('/', (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateISO();
 
   const activeCows = db.prepare("SELECT COUNT(*) c FROM cows WHERE status = 'Active'").get().c;
   const todaysYield = db.prepare('SELECT COALESCE(SUM(liters),0) l FROM milk_records WHERE date = ?').get(today).l;
@@ -18,7 +19,7 @@ router.get('/', (req, res) => {
   const trend = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(); d.setDate(d.getDate() - i);
-    const iso = d.toISOString().slice(0, 10);
+    const iso = localDateISO(d);
     const own = db.prepare('SELECT COALESCE(SUM(liters),0) l FROM milk_records WHERE date = ?').get(iso).l;
     const network = db.prepare('SELECT COALESCE(SUM(liters),0) l FROM milk_collections WHERE date = ?').get(iso).l;
     trend.push({ date: iso, liters: own + network });

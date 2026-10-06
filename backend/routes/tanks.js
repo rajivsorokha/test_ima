@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
+const { localDateISO } = require('../utils/helpers');
 
 router.get('/', (req, res) => {
   res.json(db.prepare('SELECT * FROM inventory_tanks ORDER BY name ASC').all());
@@ -41,7 +42,7 @@ router.post('/:id/adjust', (req, res) => {
   const txn = db.transaction(() => {
     db.prepare('UPDATE inventory_tanks SET current_liters = ? WHERE id = ?').run(newLevel, req.params.id);
     db.prepare(`INSERT INTO tank_logs (tank_id, date, change_liters, reason, notes) VALUES (?, ?, ?, ?, ?)`)
-      .run(req.params.id, date || new Date().toISOString().slice(0, 10), change_liters, reason || 'Adjustment', notes || null);
+      .run(req.params.id, date || localDateISO(), change_liters, reason || 'Adjustment', notes || null);
   });
   txn();
   res.json(db.prepare('SELECT * FROM inventory_tanks WHERE id = ?').get(req.params.id));

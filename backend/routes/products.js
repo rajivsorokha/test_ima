@@ -50,4 +50,21 @@ router.delete('/:id', canManageCatalog, (req, res) => {
   res.json({ success: true });
 });
 
+// Genuine permanent delete — only allowed when nothing in sales history
+// actually references this product, so we never end up with an orphaned
+// or misleading past sale. Use the soft-delete (Discontinue) above for
+// anything that's ever actually been sold.
+router.delete('/:id/permanent', canManageCatalog, (req, res) => {
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  const saleCount = db.prepare('SELECT COUNT(*) c FROM pos_sale_items WHERE product_id = ?').get(req.params.id).c;
+  if (saleCount > 0) {
+    return res.status(400).json({
+      error: `Can't permanently delete "${product.name}" — it's referenced in ${saleCount} past sale${saleCount === 1 ? '' : 's'}. Use Discontinue instead to keep that history intact.`,
+    });
+  }
+  db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
 module.exports = router;

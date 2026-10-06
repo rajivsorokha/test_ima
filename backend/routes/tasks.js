@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
+const { localDateISO } = require('../utils/helpers');
 
 router.get('/', (req, res) => {
   const { status, farm_id } = req.query;
@@ -9,7 +10,7 @@ router.get('/', (req, res) => {
   if (status && status !== 'All') { q += ' AND t.status = ?'; params.push(status); }
   if (farm_id) { q += ' AND t.farm_id = ?'; params.push(farm_id); }
   q += ' ORDER BY t.due_date ASC';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateISO();
   const rows = db.prepare(q).all(...params).map(t => ({
     ...t,
     overdue: t.status !== 'Done' && t.due_date && t.due_date < today

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
+const { localDateISO } = require('../utils/helpers');
 
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM employees ORDER BY name ASC').all();
@@ -51,7 +52,7 @@ router.put('/leaves/:id/status', (req, res) => {
   db.prepare('UPDATE leaves SET status = ? WHERE id = ?').run(status, req.params.id);
   if (status === 'Approved') {
     const leave = db.prepare('SELECT * FROM leaves WHERE id = ?').get(req.params.id);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateISO();
     if (leave && leave.start_date <= today && leave.end_date >= today) {
       db.prepare("UPDATE employees SET status = 'On Leave' WHERE id = ?").run(leave.employee_id);
     }

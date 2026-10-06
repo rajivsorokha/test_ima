@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
+const { localDateISO } = require('../utils/helpers');
 
 router.get('/', (req, res) => {
   const { start, end, cow_id, farm_id, page = 1, limit = 50 } = req.query;
@@ -18,7 +19,7 @@ router.get('/', (req, res) => {
 
 router.get('/today', (req, res) => {
   const { farm_id } = req.query;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateISO();
   const base = farm_id ? ' AND farm_id = ?' : '';
   const p = farm_id ? [today, farm_id] : [today];
   const total = db.prepare(`SELECT COALESCE(SUM(liters),0) l FROM milk_records WHERE date = ?${base}`).get(...p).l;
@@ -33,7 +34,7 @@ router.get('/trend', (req, res) => {
   for (let i = Number(days) - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const iso = d.toISOString().slice(0, 10);
+    const iso = localDateISO(d);
     const base = farm_id ? ' AND farm_id = ?' : '';
     const p = farm_id ? [iso, farm_id] : [iso];
     const liters = db.prepare(`SELECT COALESCE(SUM(liters),0) l FROM milk_records WHERE date = ?${base}`).get(...p).l;

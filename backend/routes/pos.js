@@ -1,9 +1,34 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
-const { genTokenCode } = require('../utils/helpers');
+const { genTokenCode, localDateISO } = require('../utils/helpers');
 
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return localDateISO(); }
+
+// How much actual milk is available to sell today: own-herd milk recorded
+// (Milk Recording) plus partner-farm milk collected (Milk Network), minus
+// whatever's already been sold as "Milk"-category products today, minus
+// milk already handed over for redeemed tokens today. Tokens are counted
+// here so the number stays accurate, but redeeming a token is NOT blocked
+// by a shortfall — a token was already paid for, possibly days earlier,
+// and the customer is owed that milk regardless of today's collection.
+// Only new, discretionary "Fresh Milk" sales get blocked.
+function getMilkAvailability(date) {
+  const own = db.prepare('SELECT COALESCE(SUM(liters),0) l FROM milk_records WHERE date = ?').get(date).l;
+  const network = db.prepare('SELECT COALESCE(SUM(liters),0) l FROM milk_collections WHERE date = ?').get(date).l;
+  const soldDirect = db.prepare(`SELECT COALESCE(SUM(i.qty),0) l FROM pos_sale_items i
+    JOIN pos_sales s ON s.id = i.pos_sale_id WHERE s.date = ? AND i.category = 'Milk'`).get(date).l;
+  const redeemedTokens = db.prepare(`SELECT COALESCE(SUM(liters),0) l FROM tokens
+    WHERE status = 'Redeemed' AND date(redeemed_at) = ?`).get(date).l;
+  const totalAvailable = own + network;
+  const remaining = totalAvailable - soldDirect - redeemedTokens;
+  return { date, own_liters: own, network_liters: network, total_available: totalAvailable,
+    sold_direct: soldDirect, redeemed_tokens: redeemedTokens, remaining };
+}
+
+router.get('/milk-availability', (req, res) => {
+  res.json(getMilkAvailability(req.query.date || today()));
+});
 
 router.get('/sales', (req, res) => {
   const { start, end, channel } = req.query;
@@ -41,6 +66,26 @@ router.post('/sales', (req, res) => {
   }
   const saleDate = date || today();
   const getProduct = db.prepare('SELECT * FROM products WHERE id = ?');
+
+  // Block a sale that would oversell Fresh Milk beyond what's actually
+  // been collected today (own herd + partner farms) minus what's already
+  // sold. Checked up front, across all "Milk"-category lines in this
+  // cart combined, before anything is written.
+  const milkQtyInCart = items
+    .filter((i) => {
+      const p = getProduct.get(i.product_id);
+      return p && p.category === 'Milk';
+    })
+    .reduce((sum, i) => sum + Number(i.qty || 0), 0);
+  if (milkQtyInCart > 0) {
+    const availability = getMilkAvailability(saleDate);
+    if (milkQtyInCart > availability.remaining) {
+      return res.status(400).json({
+        error: `Only ${availability.remaining.toFixed(1)}L of Fresh Milk is available today (collected: ${availability.total_available.toFixed(1)}L, already sold/redeemed: ${(availability.sold_direct + availability.redeemed_tokens).toFixed(1)}L). This sale needs ${milkQtyInCart.toFixed(1)}L.`
+      });
+    }
+  }
+
   const insertSale = db.prepare(`INSERT INTO pos_sales
     (date, customer_name, customer_phone, sale_channel, delivery_charge, payment_method, subtotal, total)
     VALUES (?, ?, ?, ?, ?, ?, 0, 0)`);
