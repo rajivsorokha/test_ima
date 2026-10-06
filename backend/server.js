@@ -8,10 +8,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Local (non-internal) IPv4 addresses this machine can be reached at on
+// the LAN — shown in Settings when this computer is acting as the
+// Network "Server" for other computers to connect to.
+function getLocalIps() {
+  const os = require('os');
+  const nets = os.networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) ips.push(net.address);
+    }
+  }
+  return ips;
+}
+
 app.get('/api/health', (req, res) => res.json({
   ok: true,
   farm: process.env.FARM_NAME || 'Ima Langnubi Dairy',
   address: process.env.FARM_ADDRESS || 'Thangmeiband Sinam Leikai, Imphal, Manipur',
+  local_ips: getLocalIps(),
+  port: PORT,
 }));
 
 // Login is open; everything else under /api requires a valid session.
@@ -40,6 +57,7 @@ app.use('/api/tasks', opsRoles, require('./routes/tasks'));
 
 app.use('/api/farms', financeRoles, require('./routes/farms'));
 app.use('/api/invoices', financeRoles, require('./routes/invoices'));
+app.use('/api/loans', financeRoles, require('./routes/loans'));
 app.use('/api/reports', financeRoles, require('./routes/reports'));
 app.use('/api/finance', financeRoles, require('./routes/finance'));
 app.use('/api/employees', financeRoles, require('./routes/employees'));
