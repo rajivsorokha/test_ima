@@ -114,6 +114,32 @@ async function renderSettings(view) {
     </div>
 
     <div class="card settings-section">
+      <h2>Email Backup</h2>
+      <p class="desc">Emails a compressed copy of the whole database (a safe off-site copy if this computer is lost or damaged) every day at the same time as the daily backup above. For Gmail, use an <b>App Password</b> (Google Account &rarr; Security &rarr; 2-Step Verification &rarr; App passwords) &mdash; not your normal password.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:10px 0;">
+        <input type="checkbox" id="emailBackupEnabled" style="width:auto;"> Send a backup email every day
+      </label>
+      <div class="form-row"><label>Send backups to (separate several with commas)</label><input type="text" id="emailTo" placeholder="owner@example.com"></div>
+      <div class="form-grid">
+        <div class="form-row"><label>Sender email account</label><input type="email" id="emailUser" placeholder="yourdairy@gmail.com" autocomplete="off"></div>
+        <div class="form-row"><label>Password / App Password</label><input type="password" id="emailPass" placeholder="" autocomplete="new-password"></div>
+      </div>
+      <div class="form-grid">
+        <div class="form-row"><label>SMTP Server</label><input type="text" id="emailHost" placeholder="smtp.gmail.com"></div>
+        <div class="form-row"><label>Port</label><input type="number" id="emailPort" placeholder="465"></div>
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:6px 0;">
+        <input type="checkbox" id="emailSecure" style="width:auto;"> Use SSL/TLS (tick for port 465; untick for port 587)
+      </label>
+      <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+        <button class="primary" id="saveEmailBtn">Save</button>
+        <button id="testEmailBtn">Send Test Email</button>
+        <button id="sendEmailNowBtn">Email Backup Now</button>
+      </div>
+      <p class="desc" id="emailStatus" style="margin-top:10px;"></p>
+    </div>
+
+    <div class="card settings-section">
       <h2>License</h2>
       <p class="desc">This software is licensed to ${health.farm} by Xeoscape.</p>
       <button id="viewLicenseBtn2">View License Agreement</button>
@@ -187,6 +213,52 @@ async function renderSettings(view) {
       loadCsvSchedule(); loadCsvHistory();
     } catch (err) { toast(err.message, true); }
   });
+
+  // ---------- Email backup ----------
+  async function loadEmailSettings() {
+    try {
+      const c = await apiGet('/backup/email-settings');
+      document.getElementById('emailBackupEnabled').checked = c.enabled;
+      document.getElementById('emailTo').value = c.to || '';
+      document.getElementById('emailUser').value = c.user || '';
+      document.getElementById('emailPass').value = '';
+      document.getElementById('emailPass').placeholder = c.has_password ? '•••••••• (saved — leave blank to keep)' : '';
+      document.getElementById('emailHost').value = c.host || '';
+      document.getElementById('emailPort').value = c.port || '';
+      document.getElementById('emailSecure').checked = c.secure;
+      document.getElementById('emailStatus').textContent = c.last_sent_at
+        ? `Last attempt: ${new Date(c.last_sent_at).toLocaleString()} — ${c.last_status || ''}`
+        : 'No backup email has been sent yet.';
+    } catch (err) { /* settings page still works without it */ }
+  }
+  async function saveEmailSettings() {
+    await apiPut('/backup/email-settings', {
+      enabled: document.getElementById('emailBackupEnabled').checked,
+      to: document.getElementById('emailTo').value,
+      user: document.getElementById('emailUser').value,
+      pass: document.getElementById('emailPass').value,
+      host: document.getElementById('emailHost').value,
+      port: document.getElementById('emailPort').value,
+      secure: document.getElementById('emailSecure').checked,
+    });
+  }
+  async function withBusy(btn, label, fn) {
+    const original = btn.textContent;
+    btn.disabled = true; btn.textContent = label;
+    try { await fn(); } catch (err) { toast(err.message, true); }
+    finally { btn.disabled = false; btn.textContent = original; loadEmailSettings(); }
+  }
+  document.getElementById('saveEmailBtn').addEventListener('click', (e) => withBusy(e.target, 'Saving...', async () => {
+    await saveEmailSettings(); toast('Email backup settings saved');
+  }));
+  document.getElementById('testEmailBtn').addEventListener('click', (e) => withBusy(e.target, 'Sending...', async () => {
+    await saveEmailSettings(); await apiPost('/backup/email-test', {}); toast('Test email sent — check the inbox');
+  }));
+  document.getElementById('sendEmailNowBtn').addEventListener('click', (e) => withBusy(e.target, 'Sending backup...', async () => {
+    await saveEmailSettings(); const r = await apiPost('/backup/email-send-now', {});
+    toast(`Backup emailed to ${r.sent_to}`);
+  }));
+  loadEmailSettings();
 
   if (rules) {
     document.getElementById('saveRatesBtn').addEventListener('click', async () => {

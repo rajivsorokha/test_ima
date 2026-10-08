@@ -98,8 +98,8 @@ async function renderFinance(view) {
         Member loans auto-deduct from that farm's milk invoice each cycle; Staff and Landlord loans are
         repaid via manual "Record Payment" entries, since there's no invoice cycle to deduct from.
       </p>
-      <div class="grid-2">
-        <div class="card">
+      <div class="grid-2" style="grid-template-columns:minmax(0,1fr);">
+        <div class="card" style="order:2; max-width:640px;">
           <h2>Issue Loan / Borrow</h2>
           <form id="loanForm">
             <div class="form-row"><label>Borrower Type</label>
@@ -128,10 +128,10 @@ async function renderFinance(view) {
             <button type="submit" class="primary" style="width:100%;">Issue</button>
           </form>
         </div>
-        <div class="card">
+        <div class="card" style="order:1;">
           <div class="card-head"><h2>Active &amp; Recent</h2></div>
-          <table><thead><tr><th>Borrower</th><th>Type</th><th>Term</th><th>Principal</th><th>Balance</th><th>Guarantor(s)</th><th>Status</th><th></th></tr></thead>
-          <tbody id="loanRows"></tbody></table>
+          <div style="overflow-x:auto;"><table><thead><tr><th>Borrower</th><th>Type</th><th>Term</th><th>Principal</th><th>Rate</th><th>Balance</th><th>Guarantor(s)</th><th>Status</th><th></th></tr></thead>
+          <tbody id="loanRows"></tbody></table></div>
         </div>
       </div>
     `;
@@ -233,59 +233,120 @@ async function renderFinance(view) {
     renderBorrowerField('member');
     renderKindExtra('short');
 
+    const canDeleteLoans = ['admin', 'manager'].includes((getCurrentUser() || {}).role);
+    const rateText = (l) => `${Number(l.interest_rate)}%/mo`;
+
+    // Full loan history: terms, interest figures, and every repayment.
+    async function showLoanHistory(id) {
+      const loan = await apiGet(`/loans/${id}`);
+      const rows = loan.repayments.length
+        ? loan.repayments.map(r => `<tr><td>${fmtDate(r.date)}</td><td>${fmtMoney(r.interest_accrued)}</td><td>${fmtMoney(r.amount_paid)}</td><td>${r.source === 'invoice' ? 'Auto (invoice)' : 'Manual'}</td><td>${escHtml(r.notes || '')}</td></tr>`).join('')
+        : `<tr><td colspan="5">No repayments recorded yet.</td></tr>`;
+      const pendingNote = loan.status === 'Active' && loan.pending_interest > 0
+        ? `<tr><td colspan="5" style="color:#b9770e;">+ ${fmtMoney(loan.pending_interest)} interest has built up since ${fmtDate(loan.last_interest_date || loan.date_issued)} and will be charged with the next payment.</td></tr>` : '';
+      openModal({
+        title: `${loan.borrower_name} — ${loan.kind === 'long' ? 'Long term Loan' : 'Short term Borrow'} History`,
+        fields: [],
+        submitLabel: 'Close',
+        extraHtml: `
+          <div class="stat-grid" style="grid-template-columns:repeat(3,1fr); margin-bottom:12px;">
+            <div class="stat-card"><div class="label">Principal</div><div class="value" style="font-size:16px;">${fmtMoney(loan.principal)}</div></div>
+            <div class="stat-card"><div class="label">Interest Rate</div><div class="value" style="font-size:16px;">${rateText(loan)}</div></div>
+            <div class="stat-card"><div class="label">Issued</div><div class="value" style="font-size:16px;">${fmtDate(loan.date_issued)}</div></div>
+            <div class="stat-card"><div class="label">Interest Charged</div><div class="value" style="font-size:16px;">${fmtMoney(loan.interest_booked)}</div></div>
+            <div class="stat-card"><div class="label">Interest Pending</div><div class="value" style="font-size:16px;">${fmtMoney(loan.pending_interest)}</div></div>
+            <div class="stat-card"><div class="label">Total Paid</div><div class="value" style="font-size:16px;">${fmtMoney(loan.total_paid)}</div></div>
+          </div>
+          <p style="margin:0 0 10px; font-size:13px;">Balance: <b>${fmtMoney(loan.balance)}</b> · To clear today (balance + pending interest): <b>${fmtMoney(loan.amount_due)}</b></p>
+          <table><thead><tr><th>Date</th><th>Interest</th><th>Paid</th><th>Source</th><th>Notes</th></tr></thead><tbody>${rows}${pendingNote}</tbody></table>`,
+        onSubmit: async (data, ov) => ov.remove(),
+      });
+    }
+
+    function editLoan(loan) {
+      const locked = loan.repayment_count > 0;
+      const overlay = openModal({
+        title: `Edit Loan — ${loan.borrower_name}`,
+        fields: [
+          ...(locked ? [] : [{ name: 'principal', label: 'Amount (Rs.)', type: 'number', step: '0.01', value: loan.principal, required: true }]),
+          { name: 'kind', label: 'Term', type: 'select', value: loan.kind, options: [{ value: 'short', label: 'Short term' }, { value: 'long', label: 'Long term' }] },
+          { name: 'interest_rate', label: 'Interest Rate (%/month)', type: 'number', step: '0.01', value: loan.interest_rate, required: true },
+          { name: 'date_issued', label: 'Date Issued', type: 'date', value: loan.date_issued, required: true },
+          { name: 'installment_amount', label: 'Monthly Installment (Rs.) — long term only', type: 'number', step: '0.01', value: loan.installment_amount ?? '' },
+          { name: 'guarantor1_farm_id', label: 'Guarantor 1 — long term only', type: 'select', value: loan.guarantor1_farm_id ?? '', options: [{ value: '', label: '— None —' }, ...farms.map(f => ({ value: f.id, label: f.name }))] },
+          { name: 'guarantor2_farm_id', label: 'Guarantor 2 (optional)', type: 'select', value: loan.guarantor2_farm_id ?? '', options: [{ value: '', label: '— None —' }, ...farms.map(f => ({ value: f.id, label: f.name }))] },
+          { name: 'notes', label: 'Notes', value: escHtml(loan.notes || '') },
+        ],
+        submitLabel: 'Save Changes',
+        extraHtml: locked ? `<p class="desc" style="margin:0;">The amount can't be changed because repayments already exist. To correct it, delete this loan and issue it again.</p>` : '',
+        onSubmit: async (data, ov) => {
+          const body = { ...data };
+          if (body.principal !== undefined) body.principal = Number(body.principal);
+          await apiPut(`/loans/${loan.id}`, body);
+          ov.remove(); toast('Loan updated'); loadLoans();
+        },
+      });
+      return overlay;
+    }
+
+    async function deleteLoan(loan) {
+      const extra = loan.repayment_count > 0 ? ` Its ${loan.repayment_count} repayment record(s) will be deleted too.` : '';
+      if (!confirm(`Delete the loan for ${loan.borrower_name} (${fmtMoney(loan.principal)})?${extra} This cannot be undone.`)) return;
+      try { await apiDelete(`/loans/${loan.id}`); toast('Loan deleted'); loadLoans(); }
+      catch (err) { toast(err.message, true); }
+    }
+
     async function loadLoans() {
       const loans = await apiGet('/loans');
       document.getElementById('loanRows').innerHTML = loans.length ? loans.map(l => {
-        const guarantors = [l.guarantor1_name, l.guarantor2_name].filter(Boolean).join(', ') || '-';
+        const guarantors = [l.guarantor1_name, l.guarantor2_name].filter(Boolean).map(escHtml).join(', ') || '-';
         const typeLabel = { member: 'Member', staff: 'Staff', landlord: 'Landlord' }[l.borrower_type] || l.borrower_type;
+        const active = l.status === 'Active';
         return `<tr>
-          <td>${l.borrower_name}</td><td>${typeLabel}</td><td>${l.kind === 'long' ? 'Long term' : 'Short term'}</td>
-          <td>${fmtMoney(l.principal)}</td><td><b>${fmtMoney(l.balance)}</b></td>
+          <td>${escHtml(l.borrower_name)}</td><td>${typeLabel}</td><td>${l.kind === 'long' ? 'Long term' : 'Short term'}</td>
+          <td>${fmtMoney(l.principal)}</td>
+          <td>${rateText(l)}</td>
+          <td><b>${fmtMoney(l.balance)}</b>${active && l.pending_interest > 0 ? `<div style="font-size:11px; color:#b9770e;">+ ${fmtMoney(l.pending_interest)} interest</div><div style="font-size:11px; color:var(--muted);">Due: ${fmtMoney(l.amount_due)}</div>` : ''}</td>
           <td>${guarantors}</td>
           <td><span class="pill ${pillClass(l.status)}">${l.status}</span>${l.is_defaulter ? ' <span class="pill red">Defaulter</span>' : ''}</td>
-          <td>
+          <td><div style="display:flex; flex-wrap:wrap; gap:4px; min-width:150px; max-width:240px;">
             <button class="small viewLoanBtn" data-id="${l.id}">History</button>
-            <button class="small statementBtn" data-id="${l.id}" data-name="${l.borrower_name}">Statement</button>
-            ${l.status === 'Active' ? `<button class="small payLoanBtn" data-id="${l.id}" data-balance="${l.balance}">Record Payment</button>` : ''}
-          </td>
+            <button class="small statementBtn" data-id="${l.id}" data-name="${escHtml(l.borrower_name)}">Statement</button>
+            ${active ? `<button class="small payLoanBtn" data-id="${l.id}">Record Payment</button>` : ''}
+            <button class="small editLoanBtn" data-id="${l.id}">Edit</button>
+            ${canDeleteLoans ? `<button class="small danger delLoanBtn" data-id="${l.id}">Delete</button>` : ''}
+          </div></td>
         </tr>`;
-      }).join('') : `<tr><td colspan="8"><div class="empty-state">No loans or borrows issued yet.</div></td></tr>`;
+      }).join('') : `<tr><td colspan="9"><div class="empty-state">No loans or borrows issued yet.</div></td></tr>`;
 
+      const byId = (id) => loans.find(l => l.id === Number(id));
       document.querySelectorAll('.statementBtn').forEach(b => b.addEventListener('click', () => {
         downloadWithAuth(`${API_BASE}/reports/loans/${b.dataset.id}/statement/pdf`, `loan-statement-${b.dataset.id}-${b.dataset.name.replace(/\s+/g, '-')}.pdf`, 'Statement downloaded');
       }));
-      document.querySelectorAll('.viewLoanBtn').forEach(b => b.addEventListener('click', async () => {
-        const loan = await apiGet(`/loans/${b.dataset.id}`);
-        const rows = loan.repayments.length
-          ? loan.repayments.map(r => `<tr><td>${fmtDate(r.date)}</td><td>${fmtMoney(r.amount_paid)}</td><td>${fmtMoney(r.interest_accrued)}</td><td>${r.source === 'invoice' ? 'Auto (invoice)' : 'Manual'}</td></tr>`).join('')
-          : `<tr><td colspan="4">No repayments recorded yet.</td></tr>`;
-        openModal({
-          title: `${loan.borrower_name} — ${loan.kind === 'long' ? 'Long term Loan' : 'Short term Borrow'} History`,
-          fields: [],
-          submitLabel: 'Close',
-          extraHtml: `<table><thead><tr><th>Date</th><th>Paid</th><th>Interest</th><th>Source</th></tr></thead><tbody>${rows}</tbody></table>`,
-          onSubmit: async (data, ov) => ov.remove(),
-        });
-      }));
+      document.querySelectorAll('.viewLoanBtn').forEach(b => b.addEventListener('click', () => showLoanHistory(b.dataset.id).catch(err => toast(err.message, true))));
+      document.querySelectorAll('.editLoanBtn').forEach(b => b.addEventListener('click', () => editLoan(byId(b.dataset.id))));
+      document.querySelectorAll('.delLoanBtn').forEach(b => b.addEventListener('click', () => deleteLoan(byId(b.dataset.id))));
       document.querySelectorAll('.payLoanBtn').forEach(b => b.addEventListener('click', () => {
+        const loan = byId(b.dataset.id);
         openModal({
           title: 'Record Manual Repayment',
           fields: [
             { name: 'date', label: 'Date', type: 'date', value: todayISO(), required: true },
-            { name: 'amount', label: `Amount (outstanding: ${fmtMoney(b.dataset.balance)})`, type: 'number', step: '0.01', required: true },
+            { name: 'amount', label: `Amount (balance ${fmtMoney(loan.balance)} + interest ${fmtMoney(loan.pending_interest)} = ${fmtMoney(loan.amount_due)} to clear today)`, type: 'number', step: '0.01', required: true },
             { name: 'notes', label: 'Notes' },
           ],
           submitLabel: 'Record Payment',
+          extraHtml: `<p class="desc" style="margin:0;">Interest at ${rateText(loan)} is charged on the balance up to the payment date, then the payment is applied to balance + interest.</p>`,
           onSubmit: async (data, ov) => {
-            const updatedLoan = await apiPost(`/loans/${b.dataset.id}/repayments`, { ...data, amount: Number(data.amount) });
+            const res = await apiPost(`/loans/${loan.id}/repayments`, { ...data, amount: Number(data.amount) });
+            const repayment = res.repayment; // real figures from the server, including interest charged
             ov.remove(); toast('Repayment recorded');
-            const fullLoan = await apiGet(`/loans/${b.dataset.id}`);
-            const repayment = { date: data.date, amount_paid: Number(data.amount), interest_accrued: 0, source: 'manual' };
+            const fullLoan = await apiGet(`/loans/${loan.id}`);
             openModal({
               title: 'Repayment Recorded',
               fields: [],
               submitLabel: 'Close',
-              extraHtml: `<p style="margin-bottom:14px;">${fmtMoney(repayment.amount_paid)} recorded for ${fullLoan.borrower_name}. Remaining balance: ${fmtMoney(fullLoan.balance)}.</p>
+              extraHtml: `<p style="margin-bottom:14px;">${fmtMoney(repayment.amount_paid)} recorded for ${escHtml(fullLoan.borrower_name)}${repayment.interest_accrued > 0 ? ` (interest charged: ${fmtMoney(repayment.interest_accrued)})` : ''}. Remaining balance: ${fmtMoney(fullLoan.balance)}.</p>
                 <div style="display:flex; gap:8px;">
                   <button type="button" id="printLoanReceiptBtn" class="small">🖨 Print Receipt</button>
                   <button type="button" id="waLoanReceiptBtn" class="small">📱 Send on WhatsApp</button>

@@ -64,12 +64,18 @@ async function renderPos(view) {
                 <option value="Counter">Counter</option>
                 <option value="Delivery">Home Delivery</option>
                 <option value="Bulk">Bulk</option>
+                <option value="B2B">B2B (Business)</option>
               </select>
             </div>
             <div class="form-row"><label>Payment Method</label>
               <select id="paymentMethod">${['Cash', 'M-Pesa', 'Bank Transfer', 'Credit'].map(m => `<option>${m}</option>`).join('')}</select>
             </div>
           </div>
+          <div class="form-grid hidden" id="b2bRow">
+            <div class="form-row"><label>Business Name *</label><input type="text" id="bizName" placeholder="e.g. Hotel / Shop / Canteen"></div>
+            <div class="form-row"><label>GSTIN (optional)</label><input type="text" id="bizGstin" placeholder="GST number" style="text-transform:uppercase;"></div>
+          </div>
+          <p class="desc hidden" id="b2bHint" style="margin:0 0 8px;">B2B prices are applied automatically (products without a B2B price use the normal price). You can still edit any line's price.</p>
           <div class="form-row hidden" id="deliveryChargeRow"><label>Delivery Charge</label><input type="number" id="deliveryCharge" value="0" step="0.01"></div>
 
           <div id="cartLines" style="margin: 10px 0;"></div>
@@ -106,10 +112,11 @@ async function renderPos(view) {
         <button class="primary" id="redeemBtn">Redeem</button>
       </div>
       <div style="display:flex; gap:8px; margin-bottom:16px; align-items:center;">
+        <button class="primary small" id="manualTokenBtn">+ Manual Token Entry (milk / milk product)</button>
         <span class="link" id="issueFreeLink">+ Issue a token without charging (replacement / promo)</span>
       </div>
       <table>
-        <thead><tr><th>Code</th><th>Size</th><th>Liters</th><th>Status</th><th>Issued To</th><th>Issued</th><th></th></tr></thead>
+        <thead><tr><th>Code</th><th>Type</th><th>Item</th><th>Qty</th><th>Status</th><th>Issued To</th><th>Issued</th><th>Entered By</th><th></th></tr></thead>
         <tbody id="tokenRows"></tbody>
       </table>
     </div>
@@ -120,7 +127,7 @@ async function renderPos(view) {
         <button class="primary small" id="addProductBtn">+ Add Product</button>
       </div>
       <table>
-        <thead><tr><th>Name</th><th>Category</th><th>Unit</th><th>Price</th><th>Stock</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Category</th><th>Unit</th><th>Price</th><th>B2B Price</th><th>Stock</th><th>Status</th><th></th></tr></thead>
         <tbody id="productMgmtRows"></tbody>
       </table>
     </div>
@@ -148,6 +155,10 @@ async function renderPos(view) {
   });
   document.getElementById('dateInput').addEventListener('change', (e) => { saleDate = e.target.value; });
 
+  // ---------- B2B pricing ----------
+  const isB2B = () => document.getElementById('saleChannel').value === 'B2B';
+  const priceFor = (p) => (isB2B() && p.b2b_price > 0 ? p.b2b_price : p.price);
+
   // ---------- Product grid ----------
   function renderGrid() {
     const grid = document.getElementById('productGrid');
@@ -155,7 +166,7 @@ async function renderPos(view) {
     grid.innerHTML = list.length ? list.map(p => `
       <button type="button" class="product-tile" data-id="${p.id}">
         <div class="pname">${p.name}</div>
-        <div class="pmeta">${fmtMoney(p.price)} / ${p.unit}</div>
+        <div class="pmeta">${fmtMoney(priceFor(p))} / ${p.unit}${isB2B() && p.b2b_price > 0 ? ' · B2B' : ''}</div>
         ${p.track_stock ? `<div class="pmeta">Stock: ${p.stock_qty}</div>` : ''}
       </button>`).join('') : `<div class="empty-state">No products in this category yet.</div>`;
     grid.querySelectorAll('.product-tile').forEach(t => t.addEventListener('click', () => addToCart(Number(t.dataset.id))));
@@ -167,7 +178,7 @@ async function renderPos(view) {
     const product = products.find(p => p.id === productId);
     const existing = cart.find(c => c.product.id === productId);
     if (existing) existing.qty += 1;
-    else cart.push({ product, qty: 1, unit_price: product.price });
+    else cart.push({ product, qty: 1, unit_price: priceFor(product) });
     renderCart();
   }
   function renderCart() {
@@ -203,8 +214,21 @@ async function renderPos(view) {
     document.getElementById('deliveryVal').textContent = fmtMoney(delivery);
     document.getElementById('totalVal').textContent = fmtMoney(subtotal + delivery);
   }
+  let lastChannel = 'Counter';
   document.getElementById('saleChannel').addEventListener('change', (e) => {
-    document.getElementById('deliveryChargeRow').classList.toggle('hidden', e.target.value !== 'Delivery');
+    const ch = e.target.value;
+    document.getElementById('deliveryChargeRow').classList.toggle('hidden', ch !== 'Delivery');
+    document.getElementById('b2bRow').classList.toggle('hidden', ch !== 'B2B');
+    document.getElementById('b2bHint').classList.toggle('hidden', ch !== 'B2B');
+    // Switching to/from B2B re-prices cart lines that are still at the standard price
+    // (a price the cashier typed by hand is left alone).
+    const wasB2B = lastChannel === 'B2B', nowB2B = ch === 'B2B';
+    if (wasB2B !== nowB2B) {
+      const priceOf = (p, b2b) => (b2b && p.b2b_price > 0 ? p.b2b_price : p.price);
+      cart.forEach(c => { if (Number(c.unit_price) === Number(priceOf(c.product, wasB2B))) c.unit_price = priceOf(c.product, nowB2B); });
+      renderCart(); renderGrid();
+    }
+    lastChannel = ch;
     renderTotals();
   });
   document.getElementById('deliveryCharge').addEventListener('input', renderTotals);
@@ -235,7 +259,11 @@ async function renderPos(view) {
 
   document.getElementById('checkoutBtn').addEventListener('click', async () => {
     if (!cart.length) return toast('Add at least one item to the cart', true);
+    const bizName = document.getElementById('bizName').value.trim();
+    if (isB2B() && !bizName) return toast('Enter the business name for a B2B sale', true);
     const payload = {
+      business_name: isB2B() ? bizName : undefined,
+      gstin: isB2B() ? (document.getElementById('bizGstin').value.trim().toUpperCase() || undefined) : undefined,
       date: dateIsCustom ? saleDate : undefined,
       customer_name: document.getElementById('custName').value || undefined,
       customer_phone: document.getElementById('custPhone').value || undefined,
@@ -255,6 +283,8 @@ async function renderPos(view) {
       cart = []; renderCart();
       document.getElementById('custName').value = '';
       document.getElementById('custPhone').value = '';
+      document.getElementById('bizName').value = '';
+      document.getElementById('bizGstin').value = '';
       await refreshStats();
     } catch (err) { toast(err.message, true); }
   });
@@ -264,7 +294,7 @@ async function renderPos(view) {
     const modal = el(`<div class="modal" style="width:340px; text-align:center;">
       <h2>Sale Complete — ${fmtMoney(sale.total)}</h2>
       <p style="font-size:13px; color:var(--muted); margin-bottom:18px;">
-        ${sale.customer_name || 'Walk-in'}${sale.customer_phone ? ' · ' + sale.customer_phone : ''}
+        ${sale.business_name ? escHtml(sale.business_name) + ' · ' : ''}${sale.customer_name || 'Walk-in'}${sale.customer_phone ? ' · ' + sale.customer_phone : ''}
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
         <button class="primary" id="printReceiptBtn">🖨 Print / Save Bill</button>
@@ -286,8 +316,8 @@ async function renderPos(view) {
     const rows = document.getElementById('salesRows');
     rows.innerHTML = sales.length ? sales.map(s => `
       <tr>
-        <td>${fmtDate(s.date)}</td><td>${s.customer_name || 'Walk-in'}</td><td>${s.customer_phone || '-'}</td>
-        <td><span class="pill ${s.sale_channel === 'Bulk' ? 'amber' : s.sale_channel === 'Delivery' ? 'gray' : 'green'}">${s.sale_channel}</span></td>
+        <td>${fmtDate(s.date)}</td><td>${s.business_name ? `<b>${escHtml(s.business_name)}</b>${s.gstin ? `<div style="font-size:11px; color:var(--muted);">GSTIN ${escHtml(s.gstin)}</div>` : ''}` : escHtml(s.customer_name || 'Walk-in')}</td><td>${s.customer_phone || '-'}</td>
+        <td><span class="pill ${s.sale_channel === 'B2B' ? 'amber' : s.sale_channel === 'Bulk' ? 'amber' : s.sale_channel === 'Delivery' ? 'gray' : 'green'}">${s.sale_channel}</span></td>
         <td>${s.items.map(i => `${i.product_name} ×${i.qty}`).join(', ')}</td>
         <td><b>${fmtMoney(s.total)}</b></td><td>${s.payment_method}</td>
         <td><button class="small billBtn" data-id="${s.id}">🧾 Bill</button></td>
@@ -302,13 +332,18 @@ async function renderPos(view) {
   async function loadTokens() {
     const tokens = await apiGet('/pos/tokens');
     const rows = document.getElementById('tokenRows');
-    rows.innerHTML = tokens.length ? tokens.map(t => `
-      <tr>
-        <td><code>${t.code}</code></td><td>${t.size}</td><td>${fmtLiters(t.liters)}</td>
+    rows.innerHTML = tokens.length ? tokens.map(t => {
+      const isProduct = t.token_type === 'Milk Product';
+      const item = isProduct ? (t.item_name || '-') : 'Fresh Milk';
+      const qty = isProduct ? (t.size || t.qty) : fmtLiters(t.liters);
+      return `<tr>
+        <td><code>${escHtml(t.code)}</code>${t.source === 'manual' ? ' <span class="pill gray">manual</span>' : ''}</td>
+        <td>${isProduct ? 'Milk Product' : 'Milk'}</td><td>${escHtml(item)}</td><td>${escHtml(qty)}</td>
         <td><span class="pill ${pillClass(t.status)}">${t.status}</span></td>
-        <td>${t.issued_to || '-'}</td><td>${fmtDate(t.issued_at)}</td>
+        <td>${escHtml(t.issued_to || '-')}</td><td>${fmtDate(t.issued_at)}</td><td>${escHtml(t.entered_by || '-')}</td>
         <td>${t.status === 'Issued' ? `<button class="small danger voidBtn" data-id="${t.id}">Void</button>` : ''}</td>
-      </tr>`).join('') : `<tr><td colspan="7"><div class="empty-state">No tokens issued yet.</div></td></tr>`;
+      </tr>`;
+    }).join('') : `<tr><td colspan="9"><div class="empty-state">No tokens issued yet.</div></td></tr>`;
     rows.querySelectorAll('.voidBtn').forEach(b => b.addEventListener('click', async () => {
       await apiPut(`/pos/tokens/${b.dataset.id}/void`); toast('Token voided'); loadTokens();
     }));
@@ -318,7 +353,7 @@ async function renderPos(view) {
     if (!code) return;
     try {
       await apiPost('/pos/tokens/redeem', { code });
-      toast('Token redeemed — milk handed over'); document.getElementById('redeemCode').value = ''; loadTokens();
+      toast('Token redeemed — handed over'); document.getElementById('redeemCode').value = ''; loadTokens();
     } catch (err) { toast(err.message, true); }
   });
 
@@ -341,6 +376,45 @@ async function renderPos(view) {
     });
   });
 
+  // ---------- Manual token entry (staff record a token from their own token book) ----------
+  document.getElementById('manualTokenBtn').addEventListener('click', () => {
+    const productOptions = products.filter(p => p.category === 'Dairy Product')
+      .map(p => ({ value: p.id, label: `${p.name} (${p.unit})` }));
+    const overlay = openModal({
+      title: 'Manual Token Entry',
+      fields: [
+        { name: 'code', label: 'Token Code (from your token book / slip)', required: true, placeholder: 'e.g. A-101' },
+        { name: 'token_type', label: 'Token For', type: 'select', value: 'Milk',
+          options: [{ value: 'Milk', label: 'Milk' }, { value: 'Milk Product', label: 'Milk Product (paneer, curd, ...)' }] },
+        { name: 'liters', label: 'Milk Quantity (liters)', type: 'number', step: '0.01', value: 1 },
+        { name: 'product_id', label: 'Product', type: 'select', value: '',
+          options: [{ value: '', label: '— Other (type name below) —' }, ...productOptions] },
+        { name: 'item_name', label: 'Product Name (if not in the list)' },
+        { name: 'qty', label: 'Product Quantity', type: 'number', step: '0.01', value: 1 },
+        { name: 'issued_to', label: 'Issued To (name)' },
+        { name: 'notes', label: 'Notes' },
+      ],
+      submitLabel: 'Save Token',
+      onSubmit: async (data, ov) => {
+        const type = data.token_type;
+        const body = { code: data.code, token_type: type, issued_to: data.issued_to || undefined, notes: data.notes || undefined };
+        if (type === 'Milk') body.liters = Number(data.liters);
+        else { body.qty = Number(data.qty); if (data.product_id) body.product_id = Number(data.product_id); else body.item_name = data.item_name; }
+        const res = await apiPost('/pos/tokens/manual', body);
+        ov.remove(); toast(`Token saved: ${res.code}`); loadTokens();
+      }
+    });
+    // Show only the fields that apply to the chosen type.
+    const rowOf = (name) => overlay.querySelector(`[name="${name}"]`).closest('.form-row');
+    const sync = () => {
+      const milk = overlay.querySelector('[name="token_type"]').value === 'Milk';
+      ['liters'].forEach(n => rowOf(n).classList.toggle('hidden', !milk));
+      ['product_id', 'item_name', 'qty'].forEach(n => rowOf(n).classList.toggle('hidden', milk));
+    };
+    overlay.querySelector('[name="token_type"]').addEventListener('change', sync);
+    sync();
+  });
+
   // ---------- Product management ----------
   async function loadProductManagement() {
     const all = await apiGet('/products?status=All');
@@ -357,6 +431,7 @@ async function renderPos(view) {
       }
       return `<tr>
         <td>${p.name}</td><td>${p.category}</td><td>${p.unit}</td><td>${fmtMoney(p.price)}</td>
+        <td>${p.b2b_price > 0 ? fmtMoney(p.b2b_price) : '—'}</td>
         <td>${stockCell}</td>
         <td><span class="pill ${p.status === 'Active' ? 'green' : 'gray'}">${p.status}</span></td>
         <td>
@@ -367,7 +442,7 @@ async function renderPos(view) {
                <button class="small danger permanentDeleteBtn" data-id="${p.id}" data-name="${p.name}">Delete Permanently</button>`}
         </td>
       </tr>`;
-    }).join('') : `<tr><td colspan="7"><div class="empty-state">No products yet.</div></td></tr>`;
+    }).join('') : `<tr><td colspan="8"><div class="empty-state">No products yet.</div></td></tr>`;
 
     rows.querySelectorAll('.editProductBtn').forEach(b => b.addEventListener('click', () => editProduct(all.find(p => p.id === Number(b.dataset.id)))));
     rows.querySelectorAll('.discontinueBtn').forEach(b => b.addEventListener('click', async () => {
@@ -396,6 +471,7 @@ async function renderPos(view) {
       { name: 'unit', label: 'Unit', type: 'select', value: p.unit || 'piece',
         options: ['litre', 'kg', 'piece', 'bottle', 'dose', 'bag', 'token'].map(u => ({ value: u, label: u })) },
       { name: 'price', label: 'Price (₹)', type: 'number', step: '0.01', required: true, value: p.price ?? 0 },
+      { name: 'b2b_price', label: 'B2B Price (₹) — optional, for business customers', type: 'number', step: '0.01', value: p.b2b_price ?? '' },
       { name: 'stock_qty', label: 'Stock Quantity (ignored for Milk / Milk Token)', type: 'number', step: '0.1', value: p.stock_qty ?? 0 },
       { name: 'token_liters', label: 'Token Size in Liters (0.25 / 0.5 / 1 — only for Milk Token)', type: 'number', step: '0.01', value: p.token_liters ?? (isToken ? '' : '') },
     ];
@@ -410,7 +486,7 @@ async function renderPos(view) {
       </div>`,
       onSubmit: async (data, ov) => {
         await apiPut(`/products/${p.id}`, {
-          ...data, price: Number(data.price), stock_qty: Number(data.stock_qty),
+          ...data, price: Number(data.price), b2b_price: data.b2b_price ? Number(data.b2b_price) : null, stock_qty: Number(data.stock_qty),
           token_liters: data.token_liters ? Number(data.token_liters) : null,
         });
         ov.remove(); toast('Product updated'); loadProductManagement(); refreshProducts();
@@ -444,7 +520,7 @@ async function renderPos(view) {
       title: 'Add Product', fields: productFields(), submitLabel: 'Add Product',
       onSubmit: async (data, overlay) => {
         await apiPost('/products', {
-          ...data, price: Number(data.price), stock_qty: Number(data.stock_qty),
+          ...data, price: Number(data.price), b2b_price: data.b2b_price ? Number(data.b2b_price) : null, stock_qty: Number(data.stock_qty),
           token_liters: data.token_liters ? Number(data.token_liters) : null,
         });
         overlay.remove(); toast('Product added'); loadProductManagement(); refreshProducts();

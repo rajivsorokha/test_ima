@@ -128,6 +128,11 @@ function pillClass(status) {
   return 'gray';
 }
 
+// Escapes text before it is placed inside HTML (names, notes, etc.).
+function escHtml(v) {
+  return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function el(html) {
   const t = document.createElement('template');
   t.innerHTML = html.trim();
@@ -200,11 +205,11 @@ function buildReceiptHtml(sale) {
       <img src="${logoUrl}" alt="Ima Langnubi Dairy" />
       <h1>Ima Langnubi Dairy</h1>
       <p>Thangmeiband Sinam Leikai, Imphal, Manipur</p>
-      <p>Sale Receipt #${sale.id}</p>
+      <p>${sale.sale_channel === 'B2B' ? 'B2B Invoice' : 'Sale Receipt'} #${sale.id}</p>
     </div>
     <div class="meta">
       Date: ${fmtDate(sale.date)}<br />
-      Customer: ${sale.customer_name || 'Walk-in'}${sale.customer_phone ? ' · ' + sale.customer_phone : ''}<br />
+      ${sale.business_name ? `Business: <b>${escHtml(sale.business_name)}</b>${sale.gstin ? ' · GSTIN: ' + escHtml(sale.gstin) : ''}<br />` : ''}Customer: ${sale.customer_name || 'Walk-in'}${sale.customer_phone ? ' · ' + sale.customer_phone : ''}<br />
       Channel: ${sale.sale_channel} · Payment: ${sale.payment_method}
     </div>
     <table>
@@ -357,6 +362,7 @@ function loanReceiptWhatsAppText(loan, repayment) {
     `Borrower: ${loan.borrower_name} (${typeLabel})`,
     `Loan #${loan.id} — ${loan.kind === 'long' ? 'Long term' : 'Short term'}`,
     '',
+    ...(Number(repayment.interest_accrued) > 0 ? [`Interest charged: ${fmtMoney(repayment.interest_accrued)}`] : []),
     `*Amount Paid: ${fmtMoney(repayment.amount_paid)}*`,
     `Remaining Balance: ${fmtMoney(loan.balance)}`,
     '',
