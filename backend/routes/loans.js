@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/db');
+const { requireRole } = require('../middleware/auth');
+const { localDateISO } = require('../utils/helpers');
 
 // "Loan" (long term) and "Borrow" (short term) both live in the `loans`
 // table, across three borrower categories (confirmed with the owner,
@@ -30,6 +32,40 @@ function isDefaulter(loan) {
   return new Date() > cutoff;
 }
 
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+// Interest that has built up on the outstanding balance since interest
+// was last charged (loan issue date, or the last repayment/invoice),
+// up to `asOf`. Prorated: 30 days = 1 month at interest_rate %/month.
+function pendingInterest(loan, asOf) {
+  if (loan.status !== 'Active' || loan.balance <= 0) return 0;
+  const from = new Date(loan.last_interest_date || loan.date_issued);
+  const to = new Date(asOf || localDateISO());
+  const days = Math.floor((to - from) / 86400000);
+  if (!(days > 0)) return 0;
+  return round2(loan.balance * (loan.interest_rate / 100) * (days / 30));
+}
+
+// Adds the computed figures the UI needs to show on every loan row.
+function withTotals(loan) {
+  const sums = db.prepare(`SELECT COALESCE(SUM(interest_accrued),0) AS interest, COALESCE(SUM(amount_paid),0) AS paid,
+    COUNT(*) AS n FROM loan_repayments WHERE loan_id = ?`).get(loan.id);
+  const pending = pendingInterest(loan);
+  return {
+    ...loan,
+    borrower_name: borrowerName(loan),
+    borrower_phone: borrowerPhone(loan),
+    is_defaulter: isDefaulter(loan),
+    interest_booked: round2(sums.interest),   // interest already charged and recorded
+    pending_interest: pending,                // interest accrued since, not yet recorded
+    total_interest: round2(sums.interest + pending),
+    total_paid: round2(sums.paid),
+    repayment_count: sums.n,
+    amount_due: round2(loan.balance + pending), // balance + pending interest = what clears the loan today
+  };
+}
+
 const LOAN_SELECT = `SELECT l.*, f.name AS farm_name, f.contact_phone AS farm_phone,
     e.name AS employee_name, e.phone AS employee_phone,
     ld.name AS landlord_name, ld.contact_phone AS landlord_phone,
@@ -53,10 +89,7 @@ router.get('/', (req, res) => {
   if (status) { q += ' AND l.status = ?'; params.push(status); }
   if (borrower_type) { q += ' AND l.borrower_type = ?'; params.push(borrower_type); }
   q += ' ORDER BY l.date_issued DESC';
-  const loans = db.prepare(q).all(...params).map((l) => ({
-    ...l, borrower_name: borrowerName(l), borrower_phone: borrowerPhone(l), is_defaulter: isDefaulter(l),
-  }));
-  res.json(loans);
+  res.json(db.prepare(q).all(...params).map(withTotals));
 });
 
 // --- Landlords: a lightweight registry, just enough to back a Landlord
@@ -76,7 +109,7 @@ router.get('/:id', (req, res) => {
   const loan = db.prepare(LOAN_SELECT + ' WHERE l.id = ?').get(req.params.id);
   if (!loan) return res.status(404).json({ error: 'Loan not found' });
   const repayments = db.prepare('SELECT * FROM loan_repayments WHERE loan_id = ? ORDER BY date DESC, id DESC').all(req.params.id);
-  res.json({ ...loan, borrower_name: borrowerName(loan), borrower_phone: borrowerPhone(loan), is_defaulter: isDefaulter(loan), repayments });
+  res.json({ ...withTotals(loan), repayments });
 });
 
 router.post('/', (req, res) => {
@@ -113,8 +146,8 @@ router.post('/', (req, res) => {
 
   const info = db.prepare(`INSERT INTO loans
     (borrower_type, farm_id, employee_id, landlord_id, kind, principal, interest_rate, installment_amount,
-     guarantor1_farm_id, guarantor2_farm_id, date_issued, balance, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     guarantor1_farm_id, guarantor2_farm_id, date_issued, last_interest_date, balance, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       bType,
       bType === 'member' ? farm_id : null,
@@ -123,10 +156,10 @@ router.post('/', (req, res) => {
       k, Number(principal), Number(interest_rate ?? 2),
       k === 'long' ? Number(installment_amount) : null,
       guarantor1_farm_id || null, guarantor2_farm_id || null,
-      date_issued, Number(principal), notes || null
+      date_issued, date_issued, Number(principal), notes || null
     );
   const loan = db.prepare(LOAN_SELECT + ' WHERE l.id = ?').get(info.lastInsertRowid);
-  res.status(201).json({ ...loan, borrower_name: borrowerName(loan), borrower_phone: borrowerPhone(loan), is_defaulter: isDefaulter(loan) });
+  res.status(201).json(withTotals(loan));
 });
 
 // Manual repayment (cash/bank) — the ONLY repayment path for staff and
@@ -135,15 +168,72 @@ router.post('/', (req, res) => {
 router.post('/:id/repayments', (req, res) => {
   const loan = db.prepare('SELECT * FROM loans WHERE id = ?').get(req.params.id);
   if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.status !== 'Active') return res.status(400).json({ error: 'This loan is already closed' });
   const { date, amount, notes } = req.body;
-  if (!date || !amount) return res.status(400).json({ error: 'date and amount are required' });
-  const amt = Math.round(Math.min(Number(amount), loan.balance) * 100) / 100;
-  const newBalance = Math.round((loan.balance - amt) * 100) / 100;
-  db.prepare('UPDATE loans SET balance = ?, status = ? WHERE id = ?')
-    .run(newBalance, newBalance <= 0 ? 'Closed' : 'Active', loan.id);
-  db.prepare(`INSERT INTO loan_repayments (loan_id, date, amount_paid, source, notes) VALUES (?, ?, ?, 'manual', ?)`)
-    .run(loan.id, date, amt, notes || null);
-  res.status(201).json(db.prepare('SELECT * FROM loans WHERE id = ?').get(loan.id));
+  if (!date || !amount || Number(amount) <= 0) return res.status(400).json({ error: 'date and a positive amount are required' });
+
+  // Interest first: charge whatever has built up on the balance up to the
+  // payment date, THEN apply the payment against balance + interest.
+  const interest = pendingInterest(loan, date);
+  const owed = round2(loan.balance + interest);
+  const amt = round2(Math.min(Number(amount), owed));
+  const newBalance = round2(owed - amt);
+  const lastInterest = (loan.last_interest_date && loan.last_interest_date > date) ? loan.last_interest_date : date;
+
+  const txn = db.transaction(() => {
+    db.prepare('UPDATE loans SET balance = ?, status = ?, last_interest_date = ? WHERE id = ?')
+      .run(newBalance, newBalance <= 0 ? 'Closed' : 'Active', lastInterest, loan.id);
+    return db.prepare(`INSERT INTO loan_repayments (loan_id, date, interest_accrued, amount_paid, source, notes) VALUES (?, ?, ?, ?, 'manual', ?)`)
+      .run(loan.id, date, interest, amt, notes || null).lastInsertRowid;
+  });
+  const repId = txn();
+  const updated = db.prepare(LOAN_SELECT + ' WHERE l.id = ?').get(loan.id);
+  res.status(201).json({ ...withTotals(updated), repayment: db.prepare('SELECT * FROM loan_repayments WHERE id = ?').get(repId) });
+});
+
+// Edit a loan. Borrower can't be changed (delete + re-issue instead). Principal
+// can only change while no repayment exists, since the balance is derived from it.
+router.put('/:id', (req, res) => {
+  const loan = db.prepare('SELECT * FROM loans WHERE id = ?').get(req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  const b = req.body;
+  const repCount = db.prepare('SELECT COUNT(*) c FROM loan_repayments WHERE loan_id = ?').get(loan.id).c;
+
+  const kind = b.kind ? (b.kind === 'long' ? 'long' : 'short') : loan.kind;
+  const interest_rate = b.interest_rate !== undefined && b.interest_rate !== '' ? Number(b.interest_rate) : loan.interest_rate;
+  const date_issued = b.date_issued || loan.date_issued;
+  const notes = b.notes !== undefined ? (b.notes || null) : loan.notes;
+  const g1 = b.guarantor1_farm_id !== undefined ? (b.guarantor1_farm_id || null) : loan.guarantor1_farm_id;
+  const g2 = b.guarantor2_farm_id !== undefined ? (b.guarantor2_farm_id || null) : loan.guarantor2_farm_id;
+  const installment = b.installment_amount !== undefined && b.installment_amount !== ''
+    ? Number(b.installment_amount) : loan.installment_amount;
+
+  if (!(interest_rate >= 0)) return res.status(400).json({ error: 'Interest rate must be 0 or more' });
+  if (kind === 'long' && !g1) return res.status(400).json({ error: 'A long-term loan requires at least one guarantor' });
+  if (kind === 'long' && !installment) return res.status(400).json({ error: 'A long-term loan requires a monthly installment amount' });
+
+  let principal = loan.principal, balance = loan.balance, lastInterest = loan.last_interest_date;
+  if (b.principal !== undefined && b.principal !== '' && Number(b.principal) !== loan.principal) {
+    if (repCount > 0) return res.status(400).json({ error: 'Principal cannot be changed once repayments exist. Delete this loan and re-issue it instead.' });
+    if (!(Number(b.principal) > 0)) return res.status(400).json({ error: 'Principal must be greater than 0' });
+    principal = Number(b.principal); balance = principal;
+  }
+  // With no repayments yet, interest simply starts from the (possibly corrected) issue date.
+  if (repCount === 0) lastInterest = date_issued;
+
+  db.prepare(`UPDATE loans SET kind=?, principal=?, balance=?, interest_rate=?, installment_amount=?,
+    guarantor1_farm_id=?, guarantor2_farm_id=?, date_issued=?, last_interest_date=?, notes=? WHERE id=?`)
+    .run(kind, principal, balance, interest_rate, kind === 'long' ? installment : null,
+      kind === 'long' ? g1 : null, kind === 'long' ? g2 : null, date_issued, lastInterest, notes, loan.id);
+  res.json(withTotals(db.prepare(LOAN_SELECT + ' WHERE l.id = ?').get(loan.id)));
+});
+
+// Delete a loan and its repayment history. Admin/manager only.
+router.delete('/:id', requireRole('admin', 'manager'), (req, res) => {
+  const loan = db.prepare('SELECT id FROM loans WHERE id = ?').get(req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  db.prepare('DELETE FROM loans WHERE id = ?').run(loan.id); // loan_repayments cascade
+  res.json({ success: true });
 });
 
 router.put('/:id/status', (req, res) => {

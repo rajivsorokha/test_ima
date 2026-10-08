@@ -58,6 +58,7 @@ app.use('/api/tasks', opsRoles, require('./routes/tasks'));
 app.use('/api/farms', financeRoles, require('./routes/farms'));
 app.use('/api/invoices', financeRoles, require('./routes/invoices'));
 app.use('/api/loans', financeRoles, require('./routes/loans'));
+app.use('/api/processing', financeRoles, require('./routes/processing'));
 app.use('/api/reports', financeRoles, require('./routes/reports'));
 app.use('/api/finance', financeRoles, require('./routes/finance'));
 app.use('/api/employees', financeRoles, require('./routes/employees'));

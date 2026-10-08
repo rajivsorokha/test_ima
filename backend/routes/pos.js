@@ -60,7 +60,11 @@ router.get('/summary', (req, res) => {
 // { date? (defaults to today), customer_name, customer_phone, sale_channel, delivery_charge,
 //   payment_method, items: [{ product_id, qty, unit_price? }] }
 router.post('/sales', (req, res) => {
-  const { date, customer_name, customer_phone, sale_channel, delivery_charge, payment_method, items } = req.body;
+  const { date, customer_name, customer_phone, sale_channel, delivery_charge, payment_method, items, business_name, gstin } = req.body;
+  const isB2B = sale_channel === 'B2B';
+  if (isB2B && !(business_name || customer_name)) {
+    return res.status(400).json({ error: 'A B2B sale needs the business name' });
+  }
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'At least one item is required' });
   }
@@ -87,8 +91,8 @@ router.post('/sales', (req, res) => {
   }
 
   const insertSale = db.prepare(`INSERT INTO pos_sales
-    (date, customer_name, customer_phone, sale_channel, delivery_charge, payment_method, subtotal, total)
-    VALUES (?, ?, ?, ?, ?, ?, 0, 0)`);
+    (date, customer_name, customer_phone, sale_channel, delivery_charge, payment_method, subtotal, total, business_name, gstin)
+    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`);
   const insertItem = db.prepare(`INSERT INTO pos_sale_items (pos_sale_id, product_id, product_name, category, qty, unit_price, subtotal)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const decrementStock = db.prepare('UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?');
@@ -98,7 +102,8 @@ router.post('/sales', (req, res) => {
   const txn = db.transaction(() => {
     const dCharge = sale_channel === 'Delivery' ? Number(delivery_charge || 0) : 0;
     const saleInfo = insertSale.run(saleDate, customer_name || null, customer_phone || null,
-      sale_channel || 'Counter', dCharge, payment_method || 'Cash');
+      sale_channel || 'Counter', dCharge, payment_method || 'Cash',
+      isB2B ? (business_name || customer_name) : null, isB2B ? (gstin || null) : null);
     const saleId = saleInfo.lastInsertRowid;
 
     let subtotal = 0;
@@ -108,7 +113,8 @@ router.post('/sales', (req, res) => {
       const qty = Number(item.qty);
       if (!qty || qty <= 0) throw new Error(`Invalid quantity for ${product.name}`);
       const unitPrice = item.unit_price !== undefined && item.unit_price !== null && item.unit_price !== ''
-        ? Number(item.unit_price) : product.price;
+        ? Number(item.unit_price)
+        : (isB2B && product.b2b_price > 0 ? product.b2b_price : product.price); // B2B falls back to the retail price if no B2B price is set
       const lineSubtotal = unitPrice * qty;
       subtotal += lineSubtotal;
       insertItem.run(saleId, product.id, product.name, product.category, qty, unitPrice, lineSubtotal);
@@ -156,6 +162,46 @@ router.post('/tokens/issue-free', (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM tokens WHERE code = ?').get(code));
 });
 
+// Manual token entry — staff record a token from their own token book/paper
+// slip using THEIR code, for either milk (liters) or a milk product
+// (paneer, curd, ... with a quantity). No charge is recorded here; it just
+// registers the token so it can be tracked and redeemed later.
+router.post('/tokens/manual', (req, res) => {
+  const { code, token_type, liters, product_id, item_name, qty, issued_to, notes } = req.body;
+  const cleanCode = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z0-9][A-Z0-9_\/-]{2,29}$/.test(cleanCode)) {
+    return res.status(400).json({ error: 'Token code must be 3-30 characters (letters, numbers, - _ /)' });
+  }
+  if (db.prepare('SELECT 1 FROM tokens WHERE code = ?').get(cleanCode)) {
+    return res.status(400).json({ error: `Token ${cleanCode} already exists` });
+  }
+  const type = token_type === 'Milk Product' ? 'Milk Product' : 'Milk';
+  const who = req.user ? req.user.name : null;
+
+  if (type === 'Milk') {
+    const l = Number(liters);
+    if (!(l > 0)) return res.status(400).json({ error: 'Enter the milk quantity in liters' });
+    const size = l === 0.25 ? 'Quarter' : l === 0.5 ? 'Half' : l === 1 ? 'One Litre' : `${l}L`;
+    db.prepare(`INSERT INTO tokens (code, size, liters, issued_to, token_type, item_name, qty, source, notes, entered_by)
+      VALUES (?, ?, ?, ?, 'Milk', 'Fresh Milk', ?, 'manual', ?, ?)`)
+      .run(cleanCode, size, l, issued_to || null, l, notes || null, who);
+  } else {
+    const q = Number(qty);
+    if (!(q > 0)) return res.status(400).json({ error: 'Enter the product quantity' });
+    let product = null;
+    if (product_id) {
+      product = db.prepare('SELECT * FROM products WHERE id = ?').get(product_id);
+      if (!product) return res.status(404).json({ error: 'Product not found' });
+    }
+    const name = product ? product.name : String(item_name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Choose a product or type its name' });
+    db.prepare(`INSERT INTO tokens (code, product_id, size, liters, issued_to, token_type, item_name, qty, source, notes, entered_by)
+      VALUES (?, ?, ?, 0, ?, 'Milk Product', ?, ?, 'manual', ?, ?)`)
+      .run(cleanCode, product ? product.id : null, `${q} ${product ? product.unit : 'unit'}`, issued_to || null, name, q, notes || null, who);
+  }
+  res.status(201).json(db.prepare('SELECT * FROM tokens WHERE code = ?').get(cleanCode));
+});
+
 // --- Tokens ---
 router.get('/tokens', (req, res) => {
   const { status } = req.query;
@@ -173,6 +219,17 @@ router.post('/tokens/redeem', (req, res) => {
   const tok = db.prepare("SELECT * FROM tokens WHERE code = ?").get(code.trim().toUpperCase());
   if (!tok) return res.status(404).json({ error: 'Token not found' });
   if (tok.status !== 'Issued') return res.status(400).json({ error: `Token is already ${tok.status.toLowerCase()}` });
+  // A milk-product token hands over stock (paneer, curd, ...) — take it off
+  // the shelf if that product is stock-tracked.
+  if (tok.token_type === 'Milk Product' && tok.product_id && tok.qty) {
+    const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(tok.product_id);
+    if (prod && prod.track_stock) {
+      if (prod.stock_qty < tok.qty) {
+        return res.status(400).json({ error: `Only ${prod.stock_qty} ${prod.unit} of ${prod.name} in stock — token needs ${tok.qty}` });
+      }
+      db.prepare('UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?').run(tok.qty, prod.id);
+    }
+  }
   db.prepare("UPDATE tokens SET status='Redeemed', redeemed_at = datetime('now') WHERE id = ?").run(tok.id);
   res.json(db.prepare('SELECT * FROM tokens WHERE id = ?').get(tok.id));
 });

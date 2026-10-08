@@ -12,7 +12,7 @@ const TABLES = [
   'milk_collections', 'milk_quality_tests', 'financial_transactions',
   'health_events', 'employees', 'leaves', 'tasks', 'products',
   'pos_sales', 'pos_sale_items', 'tokens', 'loans', 'loan_repayments',
-  'invoices', 'users',
+  'invoices', 'processors', 'production_rules', 'production_batches', 'production_ledger', 'users',
 ];
 const REDACT_COLUMNS = { users: ['password_hash'] };
 
@@ -100,13 +100,24 @@ function startScheduler() {
   if (schedulerHandle) return; // already running
   schedulerHandle = setInterval(() => {
     try {
-      if (!isBackupEnabled()) return;
       const now = new Date();
       const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       const today = localDateISO(now);
-      if (hhmm === getBackupTime() && getSetting('csv_backup_last_run_date', null) !== today) {
+      if (hhmm !== getBackupTime()) return;
+
+      if (isBackupEnabled() && getSetting('csv_backup_last_run_date', null) !== today) {
         console.log(`[csv-backup] Running scheduled backup for ${today}...`);
         runCsvBackup();
+      }
+
+      // Emailed off-site copy: same daily time, but works on its own — it does
+      // not depend on the CSV backup being switched on.
+      const emailBackup = require('./emailBackup');
+      if (emailBackup.isEnabled() && getSetting('email_backup_last_date', null) !== today) {
+        setSetting('email_backup_last_date', today); // set first so a slow send can't fire twice
+        emailBackup.sendBackupEmail()
+          .then((r) => console.log(`[email-backup] Sent to ${r.sent_to}`))
+          .catch((err) => console.error('[email-backup] Failed:', err.message));
       }
     } catch (err) {
       console.error('[csv-backup] Scheduler tick failed:', err.message);

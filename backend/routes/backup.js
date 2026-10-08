@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../db/db');
 const csvBackup = require('../lib/csvBackup');
+const emailBackup = require('../lib/emailBackup');
 
 // Starts the once-a-minute schedule check as soon as the server boots.
 csvBackup.startScheduler();
@@ -56,6 +57,28 @@ router.get('/csv-download/:date/:file', (req, res) => {
     return res.status(404).json({ error: 'Backup file not found' });
   }
   res.download(fullPath, `${date}-${file}`);
+});
+
+// --- Email backup (SMTP settings + send) ---
+router.get('/email-settings', (req, res) => res.json(emailBackup.getPublicConfig()));
+
+router.put('/email-settings', (req, res) => {
+  try {
+    emailBackup.saveConfig(req.body);
+    res.json(emailBackup.getPublicConfig());
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/email-test', async (req, res) => {
+  try { await emailBackup.sendTest(); res.json({ success: true }); }
+  catch (err) { res.status(400).json({ error: `Could not send: ${err.message}` }); }
+});
+
+router.post('/email-send-now', async (req, res) => {
+  try { res.json(await emailBackup.sendBackupEmail()); }
+  catch (err) { res.status(400).json({ error: `Backup email failed: ${err.message}` }); }
 });
 
 router.get('/info', (req, res) => {

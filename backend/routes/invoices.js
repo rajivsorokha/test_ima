@@ -81,8 +81,8 @@ router.post('/generate', (req, res) => {
       const actualPay = Math.round(Math.min(target, remaining) * 100) / 100;
       const newBalance = Math.round((owedThisCycle - actualPay) * 100) / 100;
 
-      db.prepare('UPDATE loans SET balance = ?, status = ? WHERE id = ?')
-        .run(newBalance, newBalance <= 0 ? 'Closed' : 'Active', loan.id);
+      db.prepare('UPDATE loans SET balance = ?, status = ?, last_interest_date = ? WHERE id = ?')
+        .run(newBalance, newBalance <= 0 ? 'Closed' : 'Active', period_end, loan.id);
       db.prepare(`INSERT INTO loan_repayments (loan_id, date, interest_accrued, amount_paid, source, invoice_id)
         VALUES (?, ?, ?, ?, 'invoice', ?)`).run(loan.id, period_end, interest, actualPay, invoiceId);
 
