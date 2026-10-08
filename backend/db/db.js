@@ -142,6 +142,26 @@ db.exec(`CREATE TABLE IF NOT EXISTS loan_repayments (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 
+// --- Loans: interest tracking ---
+// last_interest_date = the date interest was last charged on this loan.
+// Interest on manual repayments is accrued from this date up to the
+// payment date (prorated at 30 days = 1 month).
+ensureColumn('loans', 'last_interest_date', 'last_interest_date TEXT');
+db.exec(`UPDATE loans SET last_interest_date = COALESCE(
+  (SELECT MAX(date) FROM loan_repayments r WHERE r.loan_id = loans.id), date_issued)
+  WHERE last_interest_date IS NULL`);
+
+// --- POS: B2B + manual tokens ---
+ensureColumn('products', 'b2b_price', 'b2b_price REAL');
+ensureColumn('pos_sales', 'business_name', 'business_name TEXT');
+ensureColumn('pos_sales', 'gstin', 'gstin TEXT');
+ensureColumn('tokens', 'token_type', "token_type TEXT NOT NULL DEFAULT 'Milk'"); // 'Milk' or 'Milk Product'
+ensureColumn('tokens', 'item_name', 'item_name TEXT');
+ensureColumn('tokens', 'qty', 'qty REAL');
+ensureColumn('tokens', 'source', "source TEXT NOT NULL DEFAULT 'auto'"); // 'auto' (from a sale) or 'manual' (entered by staff)
+ensureColumn('tokens', 'notes', 'notes TEXT');
+ensureColumn('tokens', 'entered_by', 'entered_by TEXT');
+
 // First run on a fresh install: the database has tables but no users yet.
 // Create a default admin login automatically so the app is usable right
 // after installing, with no manual seed script / terminal step required

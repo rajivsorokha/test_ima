@@ -291,6 +291,7 @@ CREATE TABLE IF NOT EXISTS loans (
   guarantor1_farm_id INTEGER REFERENCES farms(id) ON DELETE SET NULL,
   guarantor2_farm_id INTEGER REFERENCES farms(id) ON DELETE SET NULL,
   date_issued TEXT NOT NULL,
+  last_interest_date TEXT, -- date interest was last charged on this loan
   balance REAL NOT NULL, -- outstanding principal + accrued interest
   status TEXT NOT NULL DEFAULT 'Active', -- Active, Closed
   notes TEXT,
@@ -334,3 +335,62 @@ CREATE INDEX IF NOT EXISTS idx_tx_date ON financial_transactions(date);
 CREATE INDEX IF NOT EXISTS idx_pos_date ON pos_sales(date);
 CREATE INDEX IF NOT EXISTS idx_tank_logs_tank ON tank_logs(tank_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+
+-- =========================== MILK PROCESSING ===========================
+-- Milk is handed to an agent/person who makes paneer, curd etc. and returns the
+-- finished product. Each hand-out is a "batch"; every step is also written to
+-- production_ledger so each production has its own transaction trail.
+CREATE TABLE IF NOT EXISTS processors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  phone TEXT,
+  kind TEXT NOT NULL DEFAULT 'Agent', -- Agent, Person
+  address TEXT,
+  status TEXT NOT NULL DEFAULT 'Active',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Liters of milk needed per 1 unit (kg) of product, by that day's milk quality,
+-- plus the bonus rule. Editable in the Milk Processing > Rules tab.
+CREATE TABLE IF NOT EXISTS production_rules (
+  product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+  lpu_good REAL NOT NULL,
+  lpu_warning REAL NOT NULL,
+  lpu_low REAL NOT NULL,
+  bonus_min_qty REAL NOT NULL DEFAULT 0, -- bonus when returned qty >= this (0 = no bonus)
+  bonus_amount REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS production_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  processor_id INTEGER NOT NULL REFERENCES processors(id),
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  milk_liters REAL NOT NULL,
+  quality_score REAL,          -- average of that day's quality tests (null if band chosen manually)
+  quality_band TEXT NOT NULL,  -- good, warning, low
+  quality_source TEXT NOT NULL DEFAULT 'auto', -- auto, manual
+  liters_per_unit REAL NOT NULL,
+  expected_qty REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Out', -- Out, Returned
+  returned_date TEXT,
+  actual_qty REAL,
+  variance_qty REAL,           -- actual - expected (negative = short)
+  bonus_amount REAL NOT NULL DEFAULT 0,
+  finance_txn_id INTEGER,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS production_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL REFERENCES production_batches(id) ON DELETE CASCADE,
+  processor_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  entry_type TEXT NOT NULL, -- Milk Issued, Product Returned, Yield Variance, Bonus
+  liters REAL,
+  qty REAL,
+  amount REAL,
+  description TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
